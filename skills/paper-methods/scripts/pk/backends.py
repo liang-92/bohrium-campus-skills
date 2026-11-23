@@ -55,6 +55,22 @@ def _extract_fitz(path: str) -> Dict[str, Any] | None:
             data = page.get_text("dict")
             blocks: List[Dict[str, Any]] = []
             images: List[List[float]] = []
+            # Vector paths are how charts and diagrams are actually drawn in most
+            # papers -- they never appear in `page.get_images()`.  Geometry only:
+            # [x0, y0, x1, y1, n_items]; `structure.find_figures` clusters them.
+            drawings: List[List[float]] = []
+            try:
+                for d in page.get_drawings():
+                    r = d.get("rect")
+                    if r is None:
+                        continue
+                    if r.width < 0.4 and r.height < 0.4:
+                        continue
+                    drawings.append([round(r.x0, 2), round(r.y0, 2),
+                                     round(r.x1, 2), round(r.y1, 2),
+                                     len(d.get("items", [])) or 1])
+            except Exception:
+                drawings = []
             for raw in data.get("blocks", []):
                 if raw.get("type") == 1:
                     images.append(_bbox(raw.get("bbox", [0, 0, 0, 0])))
@@ -85,6 +101,7 @@ def _extract_fitz(path: str) -> Dict[str, Any] | None:
                 "rotation": int(page.rotation or 0),
                 "chars": chars,
                 "images": images,
+                "drawings": drawings,
                 "blocks": blocks,
             })
     finally:
@@ -113,10 +130,33 @@ def _fitz_tables(path: str, pages: List[int] | None = None) -> List[Dict[str, An
             except Exception:
                 continue
             for t in getattr(finder, "tables", []) or []:
+                rows: List[List[str]] = []
+                # `t.extract()` jams words together when a cell is tight
+                # ("LayerType" for "Layer Type").  Re-reading each cell box with
+                # `get_textbox` keeps the spaces, and falls back to extract()
+                # when the cell boxes are unusable.
                 try:
-                    rows = t.extract()
+                    for row in getattr(t, "rows", []) or []:
+                        cells: List[str] = []
+                        for cell in getattr(row, "cells", []) or []:
+                            if cell is None:
+                                cells.append("")
+                                continue
+                            try:
+                                txt = page.get_textbox(fitz.Rect(cell))
+                            except Exception:
+                                txt = ""
+                            cells.append(re.sub(r"[ \t]+", " ", txt).strip())
+                        rows.append(cells)
+                    if not any(any(c for c in r) for r in rows):
+                        rows = []
                 except Exception:
-                    continue
+                    rows = []
+                if not rows:
+                    try:
+                        rows = t.extract()
+                    except Exception:
+                        continue
                 rows = [[("" if c is None else str(c)).strip() for c in row] for row in rows]
                 rows = [r for r in rows if any(c for c in r)]
                 if len(rows) < 2:
@@ -164,6 +204,18 @@ def _extract_plumber(path: str) -> Dict[str, Any] | None:
             images = [[round(float(o["x0"]), 2), round(float(o["top"]), 2),
                        round(float(o["x1"]), 2), round(float(o["bottom"]), 2)]
                       for o in page.images]
+            # pdfplumber exposes the same vector geometry under three lists
+            drawings: List[List[float]] = []
+            try:
+                for key in ("rects", "lines", "curves"):
+                    for o in getattr(page, key, []) or []:
+                        try:
+                            drawings.append([round(float(o["x0"]), 2), round(float(o["top"]), 2),
+                                             round(float(o["x1"]), 2), round(float(o["bottom"]), 2), 1])
+                        except Exception:
+                            continue
+            except Exception:
+                drawings = []
             pages.append({
                 "number": pno,
                 "width": round(float(page.width), 2),
@@ -171,6 +223,7 @@ def _extract_plumber(path: str) -> Dict[str, Any] | None:
                 "rotation": int(page.rotation or 0),
                 "chars": chars,
                 "images": images,
+                "drawings": drawings,
                 "blocks": blocks,
             })
     import pdfplumber  # type: ignore

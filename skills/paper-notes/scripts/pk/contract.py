@@ -60,24 +60,35 @@ class Field:
     example: Any = None
 
 
+def _has(text: str, *words: str) -> bool:
+    """Whole-word (or CJK-substring) test, so `str` does not match `abstract`."""
+    for w in words:
+        if re.fullmatch(r"[a-z0-9 ]+", w):
+            if re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", text):
+                return True
+        elif w in text:
+            return True
+    return False
+
+
 def _kind_of_text(text: str) -> str:
     t = (text or "").strip().lower()
     if not t:
         return UNKNOWN
     if "|" in t and len([p for p in t.split("|") if p.strip()]) >= 2:
         return STRING          # an enumeration of strings: complete|partial|unable
-    if any(w in t for w in ("list", "array", "[", "数组", "列表")):
+    if _has(t, "list", "array", "[", "数组", "列表"):
         return ARRAY
-    if any(w in t for w in ("object", "dict", "map", "json", "结构", "report")):
+    if _has(t, "object", "dict", "map", "json", "结构", "report"):
         return OBJECT
-    if any(w in t for w in ("bool",)):
+    if _has(t, "bool", "boolean"):
         return BOOLEAN
-    if any(w in t for w in ("int", "number", "float", "count", "score", "数量", "个数")):
+    if _has(t, "int", "integer", "number", "float", "count", "score", "数量", "个数"):
         return NUMBER
-    if any(w in t for w in ("string", "text", "str", "name", "字符串", "全文")):
-        return STRING
     if "/" in t:
         return OBJECT          # "title/authors/abstract"
+    if _has(t, "string", "text", "str", "name", "字符串", "全文"):
+        return STRING
     if "structure" in t:
         return OBJECT
     return UNKNOWN
@@ -220,6 +231,30 @@ DESC_HINTS: List[Tuple[str, Tuple[str, ...]]] = [
 LISTISH = re.compile(r"(s$|_list$|list$|items?$|entries$|pairs?$|rows?$|records?$"
                      r"|数组|列表|清单|明细)", re.I)
 
+# Third chance, for fields that name a *task output* rather than a paper part:
+# whatever the profile produced as its findings can stand in, at low confidence
+# and with the substitution printed in `field_status`.
+FALLBACK_CHAINS: Dict[str, Tuple[str, ...]] = {
+    "answers": ("knowledge_items", "section_notes", "assertions", "qa"),
+    "answer": ("knowledge_items", "section_notes", "assertions", "qa"),
+    "qa": ("knowledge_items", "questions", "section_notes"),
+    "questions": ("knowledge_items", "section_notes"),
+    "summary": ("section_notes", "abstract", "paper_card"),
+    "findings": ("knowledge_items", "assertions", "sentence_issues"),
+    "translation": ("segments",),
+    "translated_text": ("segments",),
+    "rewrites": ("sentence_issues", "edit_record_schema"),
+}
+
+
+def _chain(key: str) -> Tuple[str, ...]:
+    if key in FALLBACK_CHAINS:
+        return FALLBACK_CHAINS[key]
+    for stem, chain in FALLBACK_CHAINS.items():
+        if key.startswith(stem):
+            return chain
+    return ()
+
 
 def _norm(name: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", str(name).strip().lower()).strip("_")
@@ -355,13 +390,19 @@ def resolve(f: Field, bag: Dict[str, Any], payload: Dict[str, Any]) -> Resolutio
             v, ok = _coerce(bag[slice_name], f.kind)
             return Resolution(v, f"description:{slice_name}", 0.7, ok)
 
-    # (e) singular/plural flip on the composer's own keys
+    # (e) a task-output field the profile answers with its own findings
+    for slice_name in _chain(key):
+        if bag.get(slice_name) not in (None, "", [], {}):
+            v, ok = _coerce(bag[slice_name], f.kind)
+            return Resolution(v, f"fallback:{slice_name}", 0.5, ok)
+
+    # (f) singular/plural flip on the composer's own keys
     for cand in (key.rstrip("s"), key + "s"):
         if payload.get(cand) not in (None, "", [], {}):
             v, ok = _coerce(payload[cand], f.kind)
             return Resolution(v, "plural", 0.8, ok)
 
-    # (f) nothing: say so under the declared key
+    # (g) nothing: say so under the declared key
     return Resolution(_unsupported(
         f, "no slice of this skill answers this field; left empty on purpose "
            "instead of being filled with unrelated text"),

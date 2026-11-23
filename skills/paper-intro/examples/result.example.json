@@ -2,9 +2,35 @@
   "case_id": "example-not-a-real-case",
   "status": "partial",
   "output_contract": {
-    "document": null,
+    "document": {
+      "title": "…",
+      "sections": [],
+      "block_count": 0
+    },
     "evidence": [],
     "status": "partial"
+  },
+  "field_status": {
+    "document": {
+      "method": "exact",
+      "confidence": 1.0,
+      "declared_type": "object"
+    },
+    "evidence": {
+      "method": "slice",
+      "confidence": 0.95,
+      "declared_type": "unknown"
+    },
+    "status": {
+      "method": "slice",
+      "confidence": 0.95,
+      "declared_type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "unable"
+      ]
+    }
   },
   "evidence": [
     {

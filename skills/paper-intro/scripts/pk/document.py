@@ -29,6 +29,7 @@ def _flatten(extracted: Dict[str, Any]) -> List[Dict[str, Any]]:
             "number": p["number"], "width": p["width"], "height": p["height"],
             "rotation": p.get("rotation", 0), "chars": p["chars"],
             "images": p.get("images", []), "filled_by": p.get("filled_by"),
+            "drawings": p.get("drawings", []),
             "lines": lines,
         })
     return pages
@@ -131,8 +132,10 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
                        "markdown": norm["markdown"], "n_rows": norm["n_rows"],
                        "n_cols": norm["n_cols"], "source": t.get("source", "engine")})
 
-    figures = structure.find_figures(pages)
+    figures = structure.find_figures(pages, tables=tables, blocks=blocks)
     structure.attach_captions(blocks, tables, figures)
+    figures, figures_dropped = structure.prune_figures(figures)
+    table_region_blocks = structure.mark_table_blocks(blocks, tables)
 
     formulas = structure.find_formulas(blocks)
     references = structure.find_references(blocks)
@@ -160,21 +163,25 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
         "blocks": blocks,
         "tables": tables,
         "figures": figures,
+        "figures_dropped": figures_dropped,
         "formulas": formulas,
         "references": references,
         "page_stats": [{"page": p["number"], "chars": p["chars"], "lines": len(p["lines"]),
+                        "w": p.get("width"), "h": p.get("height"),
                         "columns": p.get("columns", 1), "bands": p.get("bands", 1),
                         "gutters": p.get("gutters", []), "filled_by": p.get("filled_by")}
                        for p in pages],
         "running_heads_removed": heads["count"],
         "verbatim_text": verbatim,
         "verbatim_chars": len(verbatim),
-        "quality": _quality(pages, blocks, tables, formulas, references, empty_pages),
+        "quality": _quality(pages, blocks, tables, formulas, references, empty_pages,
+                            figures, figures_dropped, table_region_blocks),
     }
     return doc
 
 
-def _quality(pages, blocks, tables, formulas, references, empty_pages) -> Dict[str, Any]:
+def _quality(pages, blocks, tables, formulas, references, empty_pages,
+             figures=(), figures_dropped=(), table_region_blocks=0) -> Dict[str, Any]:
     total_chars = sum(p["chars"] for p in pages)
     issues: List[str] = []
     if empty_pages:
@@ -187,12 +194,18 @@ def _quality(pages, blocks, tables, formulas, references, empty_pages) -> Dict[s
         issues.append("no tables detected (either none in the paper or engine lacks table support)")
     if not references:
         issues.append("no reference list detected")
+    if not figures:
+        issues.append("no figures detected (raster images and vector chart clusters both "
+                      "came up empty)")
     return {
         "pages": len(pages),
         "chars": total_chars,
         "chars_per_page": round(total_chars / max(1, len(pages)), 1),
         "blocks": len(blocks),
         "tables": len(tables),
+        "figures": len(figures),
+        "figures_dropped": len(figures_dropped),
+        "blocks_in_table_regions": table_region_blocks,
         "formulas": len(formulas),
         "references": len(references),
         "empty_pages": empty_pages,
@@ -249,7 +262,10 @@ def to_markdown(doc: Dict[str, Any], max_blocks: int = 400) -> str:
         return "# (no document parsed)\n"
     out = [f"# {d['meta'].get('title') or d['source']['name']}", ""]
     out.append(f"*backend*: {d['source']['backend']} · *pages*: {d['source']['pages']} · "
-               f"*blocks*: {len(d['blocks'])} · *tables*: {len(d['tables'])}")
+               f"*blocks*: {len(d['blocks'])} · *tables*: {len(d['tables'])} · "
+               f"*figures*: {len(d.get('figures', []))} · "
+               f"*formulas*: {len(d.get('formulas', []))} · "
+               f"*references*: {len(d.get('references', []))}")
     out.append("")
     for b in d["blocks"][:max_blocks]:
         tag = b["type"]
@@ -258,6 +274,27 @@ def to_markdown(doc: Dict[str, Any], max_blocks: int = 400) -> str:
             out.append(f"\n{'#' * min(4, max(1, b.get('level', 1)))} {b['text'].strip()}  {head}")
         else:
             out.append(f"{head} {b['text']}")
+    figs = d.get("figures") or []
+    tabs = d.get("tables") or []
+    if figs or tabs:
+        out.extend(["", "## 图表位置（figure / table positions）", ""])
+        if figs:
+            out.append("| id | page | kind | bbox (x0,y0,x1,y1) | area% | caption |")
+            out.append("|---|---|---|---|---|---|")
+            for f in figs:
+                cap = (f.get("caption") or "").replace("|", "\\|")[:80]
+                bb = ",".join(str(round(v)) for v in (f.get("bbox") or []))
+                out.append(f"| {f['id']} | {f['page']} | {f.get('kind','')} | {bb} | "
+                           f"{round(100 * (f.get('area_ratio') or 0), 1)} | {cap} |")
+        if tabs:
+            out.append("")
+            out.append("| id | page | rows×cols | bbox | caption |")
+            out.append("|---|---|---|---|---|")
+            for t in tabs:
+                cap = (t.get("caption") or "").replace("|", "\\|")[:80]
+                bb = ",".join(str(round(v)) for v in (t.get("bbox") or []))
+                out.append(f"| {t['id']} | {t['page']} | {t.get('n_rows')}×{t.get('n_cols')} | "
+                           f"{bb} | {cap} |")
     return "\n".join(out)
 
 
