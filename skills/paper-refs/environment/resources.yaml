@@ -1,0 +1,23 @@
+# Declared runtime for this skill. Bundled paths are relative to this directory.
+runtime: python3
+python: ">=3.9"
+packages:
+  required: []
+  optional:
+    - name: pymupdf        # fastest, best layout fidelity
+      version: ">=1.23"
+    - name: pdfplumber     # fallback table extractor
+      version: ">=0.10"
+    - name: pypdf          # last-resort text layer
+      version: ">=3.0"
+system_tools:
+  - name: pdftotext      # poppler, optional
+  - name: tesseract      # OCR, optional
+bundled:
+  - scripts/pk/          # paperkit core, pure python, no network
+  - scripts/run.py       # one-command pipeline
+  - scripts/verify.py    # post-check
+  - scripts/compose_all.py
+limits:
+  network: not required
+  files: "50 text files, 500KB each, 2MB total, no symlinks"

@@ -1,0 +1,27 @@
+{
+  "case_id": "example-not-a-real-case",
+  "status": "partial",
+  "output_contract": {
+    "document": null,
+    "evidence": [],
+    "status": "partial"
+  },
+  "evidence": [
+    {
+      "block": "p01-b001",
+      "page": 1,
+      "quote": "（示例引用，非正式案例结果）"
+    }
+  ],
+  "uncertainty": {
+    "notes": [
+      "这是接口示意，不是任何真实案例的答案"
+    ],
+    "missing": []
+  },
+  "provenance": {
+    "pdf": "example.pdf",
+    "pages": 0,
+    "engine": "paperkit 1.0.0"
+  }
+}

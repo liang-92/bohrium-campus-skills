@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+_test/
+_test*
+out/
+output/
+*.log
+!docs/*.md
+bench/pdfs/*.pdf
+.workbuddy/
+_research/
+challenges/
+trace/
