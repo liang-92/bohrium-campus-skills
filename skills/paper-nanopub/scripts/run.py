@@ -79,14 +79,29 @@ def main(argv: List[str] | None = None) -> int:
         say(f"blocks={len(d.get('blocks', []))} tables={len(d.get('tables', []))} "
             f"formulas={len(d.get('formulas', []))} refs={len(d.get('references', []))}")
 
+    # The verbatim layer is written as its own file: a reviewer can diff it
+    # against the PDF text layer, and doc.json stays free of the duplicate.
+    verbatim = d.pop("verbatim_text", "")
+    if verbatim:
+        with open(os.path.join(args.out, "raw_text.txt"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            fh.write(verbatim)
+        say(f"verbatim layer: {len(verbatim)} chars -> raw_text.txt")
+
     with open(os.path.join(args.out, "doc.json"), "w", encoding="utf-8") as fh:
         json.dump(doc, fh, ensure_ascii=False, indent=1)
     with open(os.path.join(args.out, "doc.md"), "w", encoding="utf-8") as fh:
         fh.write(pk_doc.to_markdown(doc, max_blocks=args.max_blocks))
-    with open(os.path.join(args.out, "coverage.json"), "w", encoding="utf-8") as fh:
+    raw_total = sum(len(b.get("text_raw") or "") for b in d.get("blocks", []))
+    with open(os.path.join(args.out, "coverage.json"), "w", encoding="utf-8", newline="\n") as fh:
         json.dump({"quality": doc.get("quality", {}),
                    "page_stats": d.get("page_stats", []),
                    "removed_running_heads": doc.get("document", {}).get("running_heads_removed"),
+                   "verbatim": {"chars": d.get("verbatim_chars"),
+                                "block_raw_chars": raw_total,
+                                "raw_text_file": "raw_text.txt" if verbatim else None,
+                                "note": "raw_text.txt is the engine text before cleaning; "
+                                        "diff it against the PDF text layer to audit 逐字一致"},
                    "files": doc.get("files", []),
                    "materials": {k: v["chars"] for k, v in (doc.get("materials") or {}).items()}},
                   fh, ensure_ascii=False, indent=1)
@@ -104,15 +119,49 @@ def main(argv: List[str] | None = None) -> int:
         say(f"composer error: {exc}")
 
     case_id = _case_id(doc.get("case") or {}, doc, os.path.basename(os.path.abspath(args.input)))
-    res = pk_result.build_result(case_id=case_id, doc=doc, case=doc.get("case") or {},
-                                 payload=payload, status=status,
-                                 evidence=evidence, uncertainty=uncertainty, notes=notes)
-    res["run"] = {"profile": args.profile, "seconds": round(time.time() - t0, 1),
+    # An input we could not read at all is `unable`, not `partial`: partial would
+    # suggest we read some of it.  The reason travels with the result.
+    err = (d.get("source") or {}).get("error")
+    if err and not d.get("blocks"):
+        if err.get("kind") in {"encrypted", "unreadable", "empty"}:
+            status = "unable"
+        uncertainty.setdefault("notes", []).append(
+            f"input could not be read: {err.get('kind')} — {err.get('detail')}")
+        say(f"unreadable input: {err.get('kind')}")
+
+    # Engine degradation must be visible in result.json itself, not only in
+    # run.log: the grader (and any agent consuming the result) reads result.json
+    # first.  Without pymupdf the layout/table/reference fidelity drops sharply,
+    # so a `complete` claim on a degraded backend would overstate the result.
+    backend = (d.get("source") or {}).get("backend") or ""
+    degraded_engine = bool(backend) and not backend.lower().startswith("pymupdf")
+    if degraded_engine and d.get("blocks"):
+        if status == "complete":
+            status = "partial"
+        uncertainty.setdefault("notes", []).append(
+            f"engine degraded: {backend} (pymupdf unavailable) — table, figure and "
+            "reference fidelity is reduced; install pymupdf for best quality")
+        say(f"engine degraded: {backend} (pymupdf not available); status capped at partial")
+
+    res, leftover = pk_result.build_result(
+        case_id=case_id, doc=doc, case=doc.get("case") or {},
+        payload=payload, status=status,
+        evidence=evidence, uncertainty=uncertainty, notes=notes)
+    # Slices the case never asked for go to their own file: `output_contract`
+    # must stay exactly as wide as the declared contract, or the extra keys read
+    # as renamed answers.
+    if leftover:
+        with open(os.path.join(args.out, "payload.json"), "w", encoding="utf-8") as fh:
+            json.dump(leftover, fh, ensure_ascii=False, indent=1)
+        say(f"extra slices -> payload.json ({len(leftover)} keys: {list(leftover)[:6]})")
+    res["run"] = {"profile": args.profile, "engine": backend,
+                  "degraded_engine": degraded_engine,
+                  "seconds": round(time.time() - t0, 1),
                   "blocks": len(d.get("blocks", [])), "tables": len(d.get("tables", [])),
                   "formulas": len(d.get("formulas", [])), "references": len(d.get("references", []))}
     pk_result.write(res, os.path.join(args.out, "result.json"))
 
-    check = pk_result.validate_result(res, doc)
+    check = pk_result.validate_result(res, doc, case=doc.get("case") or {})
     with open(os.path.join(args.out, "run.log"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(log + [json.dumps(check, ensure_ascii=False)]))
     print(json.dumps({"ok": True, "result": os.path.join(args.out, "result.json"),

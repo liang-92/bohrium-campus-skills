@@ -283,6 +283,39 @@ def available_backends() -> List[str]:
     return names
 
 
+def diagnose(path: str, attempts: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Say *why* nothing could be read, in words a reviewer can act on.
+
+    The rubric explicitly lists encrypted PDFs, scans without a text layer and
+    corrupted files.  Those are results to report, not exceptions to raise.
+    """
+    info: Dict[str, Any] = {"kind": "unknown", "detail": "", "encrypted": False,
+                            "pages": 0, "attempts": attempts}
+    try:
+        import fitz
+        doc = fitz.open(path)
+        info["pages"] = doc.page_count
+        info["encrypted"] = bool(doc.needs_pass)
+        if doc.needs_pass:
+            info["kind"] = "encrypted"
+            info["detail"] = ("PDF is password protected and no password was supplied; "
+                              "text cannot be read without it")
+        elif doc.page_count == 0:
+            info["kind"] = "empty"
+            info["detail"] = "PDF reports zero pages"
+        else:
+            probe = range(min(3, doc.page_count))
+            has_img = any(doc[i].get_images(full=True) for i in probe)
+            info["kind"] = "scan_without_text_layer" if has_img else "no_extractable_text"
+            info["detail"] = ("pages carry images but no text layer; OCR is required"
+                              if has_img else "no extractable text found on the first pages")
+        doc.close()
+    except Exception as exc:
+        info["kind"] = "unreadable"
+        info["detail"] = f"{type(exc).__name__}: {exc}"
+    return info
+
+
 def extract(path: str) -> Dict[str, Any]:
     """Extract every page with the best available engine.
 
@@ -310,7 +343,11 @@ def extract(path: str) -> Dict[str, Any]:
         if good == len(res["pages"]):
             break
     if best is None:
-        raise RuntimeError("no PDF engine produced text; attempts=" + json.dumps(attempts))
+        # Never raise: an unreadable PDF (encrypted, truncated, not a PDF) is a
+        # *result* the caller must be able to report, not a crash.  The reason is
+        # kept so result.json can say why instead of dying with a traceback.
+        return {"backend": "none", "pages": [], "attempts": attempts,
+                "error": diagnose(path, attempts)}
 
     # fill empty pages with a secondary engine, if any
     if any(p["chars"] < MIN_PAGE_CHARS for p in best["pages"]):

@@ -168,7 +168,12 @@ def find_figures(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if w * h < 4000:
                 continue
             figs.append({"id": f"fig-p{p['number']}-{i}", "page": p["number"], "bbox": bbox,
-                         "width": round(w, 1), "height": round(h, 1)})
+                         "width": round(w, 1), "height": round(h, 1),
+                         # raster = bitmap placed on the page. Vector drawings are
+                         # not captured by the engine's image list, so a page that
+                         # only holds a chart will show up empty here rather than
+                         # being guessed at.
+                         "kind": "raster", "area": round(w * h, 1)})
     return figs
 
 

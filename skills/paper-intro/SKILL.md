@@ -81,6 +81,15 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 | `citation_coverage` | 引用编号数 vs 条目数 |
 | `outline` | 建议的五段式论证骨架 |
 
+每个块同时留三样东西，方便复核而不是只能相信结论：
+
+| 字段 | 用途 |
+|---|---|
+| `text` | 清洗后的可读文本（合并了行末连字符、去掉了页眉页脚） |
+| `raw_text.txt` | **引擎原始文字层**：未合并、未删除，可直接与 PDF 文本层逐字 diff |
+| `break_reason` / `order_rule` | 这一段为什么在这里断开、该页用的是 XY-cut 还是按 y 排序 |
+| `evidence[]` | 块 id + 页码 + 原文引句；`verify.py` 会回查引句是否真在该块里 |
+
 `result.json` 同时保留 `case_id`、`status`、`evidence`、`uncertainty`、`provenance`，
 以及 `case.json` 里声明的 `output_contract` 字段。字段名与内部切片对不上时按语义匹配回填，
 **仍为空才留 `null`**，并在 `uncertainty.inferred_fields` 里逐项说明是怎么推出来的。

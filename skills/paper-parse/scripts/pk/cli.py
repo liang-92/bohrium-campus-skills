@@ -46,13 +46,19 @@ def cmd_result(args: argparse.Namespace) -> int:
     case_id = args.case_id or str((doc.get("case") or {}).get("case_id")
                                   or (doc.get("case") or {}).get("id")
                                   or os.path.basename(os.path.dirname(os.path.abspath(args.doc))))
-    res = result_mod.build_result(case_id=case_id, doc=doc, payload=payload,
-                                  status=args.status,
-                                  evidence=payload.pop("evidence", []) if isinstance(payload, dict) else [],
-                                  uncertainty=payload.pop("uncertainty", None) if isinstance(payload, dict) else None,
-                                  notes=payload.pop("notes", []) if isinstance(payload, dict) else [])
+    res, leftover = result_mod.build_result(
+        case_id=case_id, doc=doc, payload=payload, status=args.status,
+        evidence=payload.pop("evidence", []) if isinstance(payload, dict) else [],
+        uncertainty=payload.pop("uncertainty", None) if isinstance(payload, dict) else None,
+        notes=payload.pop("notes", []) if isinstance(payload, dict) else [])
     result_mod.write(res, args.out)
-    print(json.dumps({"ok": True, "out": args.out, "fields": list(res["output_contract"].keys())},
+    if leftover:
+        side = os.path.join(os.path.dirname(os.path.abspath(args.out)), "payload.json")
+        with open(side, "w", encoding="utf-8") as fh:
+            json.dump(leftover, fh, ensure_ascii=False, indent=1)
+    print(json.dumps({"ok": True, "out": args.out,
+                      "fields": list(res["output_contract"].keys()),
+                      "payload_sidecar": bool(leftover)},
                      ensure_ascii=False, indent=2))
     return 0
 
@@ -60,7 +66,7 @@ def cmd_result(args: argparse.Namespace) -> int:
 def cmd_validate(args: argparse.Namespace) -> int:
     doc = _load(args.doc) if args.doc else None
     res = _load(args.result)
-    report = result_mod.validate_result(res, doc)
+    report = result_mod.validate_result(res, doc, case=(doc or {}).get("case") or {})
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["ok"] else 1
 

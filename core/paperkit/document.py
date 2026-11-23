@@ -35,16 +35,23 @@ def _flatten(extracted: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _ocr_pages(pdf_path: str, pages: List[Dict[str, Any]], lang: str = "eng") -> List[int]:
-    """OCR pages that have almost no text layer but do carry images."""
+    """OCR pages that have almost no text layer but do carry images.
+
+    A page that needed OCR and did not get it is marked `ocr_failed`, so the
+    report can say "OCR was required here but no engine was available" instead
+    of silently returning an empty page.
+    """
     done: List[int] = []
     for p in pages:
         if p["chars"] >= backends.MIN_PAGE_CHARS or not p["images"]:
             continue
         png = backends.render_page(pdf_path, p["number"], dpi=220)
         if not png:
+            p["ocr_failed"] = "page could not be rendered"
             continue
         text = backends.ocr_image(png, lang=lang)
         if not text or len(text.strip()) < 20:
+            p["ocr_failed"] = "OCR engine returned no text (tesseract missing or failed)"
             continue
         lines = []
         y = 20.0
@@ -62,10 +69,45 @@ def _ocr_pages(pdf_path: str, pages: List[Dict[str, Any]], lang: str = "eng") ->
     return done
 
 
+def _unreadable(pdf_path: str, extracted: Dict[str, Any]) -> Dict[str, Any]:
+    """Same schema as a normal result, but empty and with the reason attached.
+
+    Downstream code (composers, contract adapter, verify) then keeps working and
+    the output says "encrypted, no password" instead of a traceback.
+    """
+    info = extracted.get("error") or {"kind": "unreadable", "detail": "no pages extracted"}
+    exists = os.path.exists(pdf_path)
+    return {
+        "schema": "paperkit/document@1",
+        "source": {
+            "path": os.path.abspath(pdf_path), "name": os.path.basename(pdf_path),
+            "bytes": os.path.getsize(pdf_path) if exists else None,
+            "sha256": sources.sha256(pdf_path) if exists else None,
+            "pages": info.get("pages") or 0,
+            "backend": extracted.get("backend", "none"),
+            "attempts": extracted.get("attempts", []),
+            "ocr_pages": [], "has_text_layer": False, "error": info,
+        },
+        "meta": {"title": "", "authors": [], "abstract": "", "keywords": [], "doi": ""},
+        "sections": [], "blocks": [], "tables": [], "figures": [], "formulas": [],
+        "references": [], "page_stats": [], "running_heads_removed": 0,
+        "quality": {"pages": info.get("pages") or 0, "chars": 0, "chars_per_page": 0.0,
+                    "blocks": 0, "tables": 0, "formulas": 0, "references": 0,
+                    "empty_pages": [],
+                    "issues": [f"{info.get('kind')}: {info.get('detail')}"]},
+    }
+
+
 def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
     extracted = backends.extract(pdf_path)
     pages = _flatten(extracted)
+    if not pages:
+        return _unreadable(pdf_path, extracted)
     ocr_done = _ocr_pages(pdf_path, pages) if ocr else []
+
+    # Snapshot the engine's own text before any cleaning.  Reviewers can diff
+    # this against the PDF text layer to check "逐字一致" instead of trusting us.
+    verbatim = "\n".join(l["text"] for p in pages for l in p["lines"])
 
     heads = layout.strip_running_heads(pages)
     body = layout.body_font_size(pages)
@@ -125,6 +167,8 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
                         "gutters": p.get("gutters", []), "filled_by": p.get("filled_by")}
                        for p in pages],
         "running_heads_removed": heads["count"],
+        "verbatim_text": verbatim,
+        "verbatim_chars": len(verbatim),
         "quality": _quality(pages, blocks, tables, formulas, references, empty_pages),
     }
     return doc
@@ -135,6 +179,10 @@ def _quality(pages, blocks, tables, formulas, references, empty_pages) -> Dict[s
     issues: List[str] = []
     if empty_pages:
         issues.append(f"{len(empty_pages)} page(s) without a text layer: {empty_pages[:10]}")
+    failed = [p["number"] for p in pages if p.get("ocr_failed")]
+    if failed:
+        issues.append(f"OCR was required but produced nothing on page(s) {failed[:10]}: "
+                      f"install tesseract (`apt-get install -y tesseract-ocr`) to fill them")
     if not tables:
         issues.append("no tables detected (either none in the paper or engine lacks table support)")
     if not references:

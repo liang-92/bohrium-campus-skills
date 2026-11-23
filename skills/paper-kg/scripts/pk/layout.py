@@ -265,6 +265,8 @@ def order_page(page: Dict[str, Any]) -> Dict[str, Any]:
     page["gutters"] = [[a, b] for a, b in gutters]
     page["columns"] = len(gutters) + 1 if gutters else 1
     page["bands"] = 1
+    # Which rule produced this page's reading order -- part of the evidence.
+    page["order_rule"] = "xy-cut" if gutters else "naive-y"
     return page
 
 
@@ -328,7 +330,7 @@ def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str
         current: List[Dict[str, Any]] = []
         counter = 0
 
-        def flush():
+        def flush(reason: str = "page-start"):
             nonlocal current, counter
             if not current:
                 return
@@ -346,9 +348,17 @@ def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str
                 "column": current[0].get("col", 0),
                 "type": "body",
                 "text": text,
+                # Verbatim layer: the engine's own line strings, hyphen kept and
+                # spacing untouched, so a reviewer can diff against the PDF text
+                # layer character by character.  `text` is the cleaned view.
+                "text_raw": "\n".join(l["text"] for l in current),
                 "size": round(max(sizes) if sizes else body_size, 2),
                 "bold": any(l.get("bold") for l in current),
                 "lines": len(current),
+                # Decision evidence: why this block starts where it does.
+                "order_rule": p.get("order_rule", "naive-y"),
+                "columns_on_page": p.get("columns", 1),
+                "break_reason": reason,
             })
             current = []
 
@@ -366,14 +376,23 @@ def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str
             right = _right_edge(prev["bbox"][0], edges, p["width"] * 0.5)
             short_prev = prev["bbox"][2] < right - max(10.0, size_prev * 2.2)
             big_block = len(current) >= 12 or sum(len(l["text"]) for l in current) > 1200
-            splits = (gap > gap_limit or short_prev or not same_style or big_block
-                      or bool(prev.get("bold")) != bool(ln.get("bold")))
-            if not splits:
+            reason = ""
+            if gap > gap_limit:
+                reason = f"vertical-gap {gap:.1f}pt > {gap_limit:.1f}pt"
+            elif short_prev:
+                reason = "short-line (paragraph end)"
+            elif not same_style:
+                reason = f"font-size-change {size_prev:.1f}->{size_now:.1f}"
+            elif big_block:
+                reason = "block-size-cap"
+            elif bool(prev.get("bold")) != bool(ln.get("bold")):
+                reason = "weight-change"
+            if not reason:
                 current.append(ln)
             else:
-                flush()
+                flush(reason)
                 current = [ln]
-        flush()
+        flush("page-start")
     return _merge_hyphen_continuations(blocks)
 
 
@@ -389,6 +408,8 @@ def _merge_hyphen_continuations(blocks: List[Dict[str, Any]]) -> List[Dict[str, 
                     and prev["page"] == b["page"])
             if cont:
                 prev["text"] = tail[:-1] + head
+                prev["text_raw"] = prev.get("text_raw", tail) + "\n" + b.get("text_raw", head)
+                prev["hyphen_merged"] = True
                 prev["lines"] += b.get("lines", 0)
                 prev["bbox"] = [min(prev["bbox"][0], b["bbox"][0]), min(prev["bbox"][1], b["bbox"][1]),
                                 max(prev["bbox"][2], b["bbox"][2]), max(prev["bbox"][3], b["bbox"][3])]

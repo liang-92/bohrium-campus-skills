@@ -133,7 +133,12 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     d = doc["document"]
     evidence: List[Dict[str, Any]] = []
     blocks = [{"id": b["id"], "page": b["page"], "column": b.get("column"),
-               "section": sec_of(b), "type": b["type"], "text": b["text"]}
+               "section": sec_of(b), "type": b["type"], "text": b["text"],
+               # decision evidence, so a reviewer can see *why* a block starts here
+               "bbox": b.get("bbox"), "order_rule": b.get("order_rule"),
+               "break_reason": b.get("break_reason"),
+               "hyphen_merged": bool(b.get("hyphen_merged")),
+               "text_raw_ref": "raw_text.txt"}
               for b in d["blocks"]]
     for b in d["blocks"][:12]:
         add_evidence(evidence, ev(b, "structure sample"))
@@ -141,11 +146,20 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         add_evidence(evidence, {"table": t["id"], "page": t["page"], "quote": t["caption"][:200],
                                 "why": "table with caption", "block": t.get("caption_block")})
     payload = {
+        # A contract field called `document` (or `full structure`) is asking for
+        # the document as a whole, so this slice carries the outline and the
+        # counts as well as the bibliographic head -- not just the metadata.
         "document": {
             "title": d["meta"].get("title", ""), "authors": d["meta"].get("authors", []),
             "abstract": d["meta"].get("abstract", ""), "keywords": d["meta"].get("keywords", []),
             "doi": d["meta"].get("doi", ""), "pages": d["source"]["pages"],
             "engine": d["source"]["backend"], "sha256": d["source"]["sha256"],
+            "section_count": len(d["sections"]),
+            "sections": [{"level": s["level"], "title": s["title"], "page": s["page"]}
+                         for s in d["sections"]],
+            "block_count": len(d["blocks"]),
+            "counts": {"tables": len(d["tables"]), "figures": len(d["figures"]),
+                       "formulas": len(d["formulas"]), "references": len(d["references"])},
         },
         "structure": [{"level": s["level"], "title": s["title"], "page": s["page"], "block": s["block"]}
                       for s in d["sections"]],
@@ -153,6 +167,9 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                     "formulas": d["formulas"], "references": d["references"]},
         "coverage": d["quality"],
         "page_map": d["page_stats"],
+        "verbatim": {"file": "raw_text.txt", "chars": d.get("verbatim_chars"),
+                     "note": "engine text before cleaning; diff against the PDF text layer "
+                             "to audit 逐字一致, then use content.blocks[].text for structure"},
     }
     status = "complete" if d["blocks"] and d["quality"]["chars_per_page"] > 200 else "partial"
     notes = [f"reading order reconstructed with XY-cut; {d['quality']['tables']} tables, "

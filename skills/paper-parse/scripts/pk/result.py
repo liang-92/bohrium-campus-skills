@@ -1,15 +1,16 @@
 """Building and validating the `result.json` the platform reads.
 
 The runtime contract names `output_contract` but the concrete field list lives in
-each case's `case.json`.  So we never guess: we copy the contract keys, fill what
-we can prove, and park the rest under `uncertainty` instead of inventing values.
+each case's `case.json`.  So we never guess: we read the declared fields, keep
+their names verbatim, fill what we can prove, and say plainly which ones nothing
+in this skill answers — instead of inventing values or renaming keys.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from . import contract
 
@@ -17,32 +18,9 @@ REQUIRED = ["case_id", "status"]
 
 
 def contract_fields(case: Dict[str, Any], doc: Dict[str, Any] | None = None) -> List[str]:
-    """Collect field names from any plausible place a case may declare them."""
-    found: List[str] = []
-
-    def walk(node: Any, depth: int = 0):
-        if depth > 4:
-            return
-        if isinstance(node, dict):
-            for k, v in node.items():
-                if k in {"output_contract", "outputContract", "contract", "outputs"}:
-                    if isinstance(v, dict):
-                        found.extend(v.keys())
-                    elif isinstance(v, list):
-                        for item in v:
-                            if isinstance(item, str):
-                                found.append(item)
-                            elif isinstance(item, dict) and "name" in item:
-                                found.append(str(item["name"]))
-                walk(v, depth + 1)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item, depth + 1)
-
-    walk(case)
-    if doc and isinstance(doc.get("case"), dict):
-        walk(doc["case"])
-    return list(dict.fromkeys(found))
+    """Declared field names, in declaration order (kept for callers that only
+    want the names; `contract.spec` gives the full description/type)."""
+    return contract.names(contract.spec(case, doc))
 
 
 def skeleton(fields: List[str]) -> Dict[str, Any]:
@@ -55,29 +33,51 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
                  status: str = "complete",
                  evidence: List[Dict[str, Any]] | None = None,
                  uncertainty: Dict[str, Any] | None = None,
-                 notes: List[str] | None = None) -> Dict[str, Any]:
+                 notes: List[str] | None = None
+                 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return `(result, leftover_payload)`.
+
+    The second element is what the composer produced beyond the contract; it is
+    written to `payload.json` by the caller so `output_contract` stays exactly
+    as wide as the case asked for.
+    """
     case = case or (doc or {}).get("case") or {}
-    fields = contract_fields(case, doc)
+    fields = contract.spec(case, doc)
     payload = payload or {}
-    # The composer speaks in paper-shaped slices; the case speaks in its own
-    # field names.  `contract.adapt` reconciles the two and never leaves a
-    # declared field null -- unmapped fields become a typed digest and are
-    # disclosed under `uncertainty.inferred_fields`.
-    body, inferred = contract.adapt(payload, fields, doc) if fields else (dict(payload), [])
+
+    if fields:
+        body, field_status, leftover = contract.adapt(
+            payload, fields, doc or {}, evidence=evidence, status=status)
+    else:
+        # No declared contract: the composer's payload is the result.  An empty
+        # `output_contract` here would look like a failed run.
+        body, field_status, leftover = dict(payload), {}, {}
+
+    inferred = [{"field": k, "how": v["method"]} for k, v in field_status.items()
+                if v["method"] not in {"exact", "slice", "runtime"}]
+    unsupported = [k for k, v in field_status.items() if v["method"] == "unsupported"]
     if inferred:
         uncertainty = dict(uncertainty or {})
         uncertainty.setdefault("notes", [])
         uncertainty["inferred_fields"] = inferred
         uncertainty["notes"] = list(uncertainty["notes"]) + [
-            f"{len(inferred)} contract field(s) had no exact key and were filled by "
-            f"semantic match: " + ", ".join(i["field"] for i in inferred[:12])]
+            f"{len(inferred)} contract field(s) were routed by name/description "
+            f"rather than an exact key: " + ", ".join(i["field"] for i in inferred[:12])]
+    if unsupported:
+        uncertainty = dict(uncertainty or {})
+        uncertainty.setdefault("missing", [])
+        uncertainty["missing"] = list(uncertainty["missing"]) + [
+            f"output_contract.{k}: this skill produces nothing for it "
+            f"(see field_status.{k})" for k in unsupported]
 
     d = (doc or {}).get("document") or {}
     result = {
         "case_id": case_id,
         "status": status,
+        # The declared fields live in exactly one place, under their own names,
+        # in the order the case declared them.
         "output_contract": body,
-        **{k: v for k, v in body.items() if k not in {"case_id", "status"}},
+        "field_status": field_status,
         "evidence": evidence or [],
         "uncertainty": uncertainty or {"notes": [], "missing": []},
         "provenance": {
@@ -90,10 +90,15 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
         },
         "notes": notes or [],
     }
-    return result
+    if not fields:
+        result["notes"] = list(result["notes"]) + [
+            "case.json declared no output_contract; the full composer payload is in "
+            "output_contract and payload.json"]
+    return result, leftover
 
 
-def validate_result(result: Dict[str, Any] | str, doc: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def validate_result(result: Dict[str, Any] | str, doc: Dict[str, Any] | None = None,
+                    case: Dict[str, Any] | None = None) -> Dict[str, Any]:
     if isinstance(result, str):
         with open(result, "r", encoding="utf-8") as fh:
             result = json.load(fh)
@@ -127,6 +132,16 @@ def validate_result(result: Dict[str, Any] | str, doc: Dict[str, Any] | None = N
         nulls = [k for k, v in body.items() if v is None]
         if nulls:
             problems.append("declared contract fields left null: " + ", ".join(nulls[:8]))
+        if case:
+            declared = contract.names(contract.spec(case, doc))
+            missing = [k for k in declared if k not in body]
+            if missing:
+                problems.append("declared contract field(s) absent from result.json: "
+                                + ", ".join(missing[:8]))
+            renamed = [k for k in body if k not in declared]
+            if declared and renamed:
+                problems.append("output_contract carries undeclared key(s): "
+                                + ", ".join(renamed[:8]))
     return {"ok": not problems, "problems": problems, "evidence_items": len(ev),
             "contract_fields": len(body) if isinstance(body, dict) else 0}
 
