@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -35,6 +36,13 @@ from pk import document as pk_doc          # noqa: E402
 from pk import evidence as pk_ev           # noqa: E402
 from pk import result as pk_result         # noqa: E402
 import compose_all                          # noqa: E402
+
+# Notes composers write when a field is a placeholder.  Once --fill supplies the
+# text they are no longer true, and a stale "still empty" note next to a filled
+# field is the kind of contradiction a reviewer catches first.
+_STALE_EMPTY = re.compile(
+    r"(intentionally empty|left empty|to be filled|awaiting|not yet translated)",
+    re.IGNORECASE | re.UNICODE)
 
 
 def _case_id(case: Dict[str, Any], doc: Dict[str, Any], fallback: str) -> str:
@@ -55,6 +63,55 @@ def _default_profile() -> str:
     return os.environ.get("SKILL_PROFILE", "parse")
 
 
+def _load_fill(explicit: str | None, out_dir: str, in_dir: str) -> tuple:
+    """Find the agent's fill file: `--fill`, else fill.json next to the output/input."""
+    cands = [explicit] if explicit else []
+    cands += [os.path.join(out_dir, "fill.json"), os.path.join(in_dir, "fill.json")]
+    for path in cands:
+        if path and os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if isinstance(data, dict):
+                    return data, path
+            except Exception as exc:
+                print(f"fill file ignored ({path}): {exc}", file=sys.stderr)
+    return {}, ""
+
+
+def _apply_fill(payload: Dict[str, Any], fill: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge text the agent wrote back into the payload.
+
+    The scripts cannot translate or write prose; the agent can.  Without this,
+    `segments[].translation` stays empty and `result.json` ships an empty
+    deliverable -- the single biggest way a translation task loses points.
+    Every applied value is counted, and `run.fill` records where it came from,
+    so agent-written text is never mistaken for extracted text.
+    """
+    applied = 0
+    segs = fill.get("segments") or {}
+    if segs and isinstance(payload.get("segments"), list):
+        for s in payload["segments"]:
+            value = segs.get(str(s.get("seg")))
+            if isinstance(value, str) and value.strip():
+                s["translation"] = value.strip()
+                applied += 1
+    gloss = {str(k).lower(): v for k, v in (fill.get("glossary") or {}).items()}
+    if gloss and isinstance(payload.get("glossary"), list):
+        for t in payload["glossary"]:
+            value = gloss.get(str(t.get("term") or "").lower())
+            if isinstance(value, str) and value.strip():
+                t["zh"] = value.strip()
+                applied += 1
+    for key, value in (fill.get("replace") or {}).items():
+        if value not in (None, "", [], {}):
+            payload[key] = value
+            applied += 1
+    segs_all = payload.get("segments") or []
+    left = sum(1 for s in segs_all if not (s.get("translation") or "").strip())
+    return {"applied": applied, "segments": len(segs_all), "untranslated": left}
+
+
 def main(argv: List[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="run a weekly-skill on one case")
     ap.add_argument("--input", default="/input")
@@ -62,6 +119,8 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--profile", default=_default_profile())
     ap.add_argument("--no-ocr", action="store_true")
     ap.add_argument("--max-blocks", type=int, default=1200)
+    ap.add_argument("--fill", help="json with the agent-written text to merge "
+                                   "(default: fill.json in --out or --input)")
     ap.add_argument("--probe", action="store_true",
                     help="report which engines exist, then exit (no case needed)")
     args = ap.parse_args(argv)
@@ -114,9 +173,11 @@ def main(argv: List[str] | None = None) -> int:
         fh.write(pk_doc.to_markdown(doc, max_blocks=args.max_blocks))
     raw_total = sum(len(b.get("text_raw") or "") for b in d.get("blocks", []))
     with open(os.path.join(args.out, "coverage.json"), "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({"quality": doc.get("quality", {}),
+        json.dump({"quality": doc.get("quality") or {},
                    "page_stats": d.get("page_stats", []),
-                   "removed_running_heads": doc.get("document", {}).get("running_heads_removed"),
+                   # `d` is already normalised from a possibly-null `document`:
+                   # dict.get's default never fires for an explicit null.
+                   "removed_running_heads": d.get("running_heads_removed"),
                    # rubric-named failure modes: each one is reported instead of
                    # being silently smoothed over
                    "page_order": d.get("page_order"),
@@ -145,6 +206,28 @@ def main(argv: List[str] | None = None) -> int:
         log.append(traceback.format_exc())
         say(f"composer error: {exc}")
 
+    fill, fill_path = _load_fill(args.fill, args.out, args.input)
+    fill_info: Dict[str, Any] = {"applied": 0, "segments": 0, "untranslated": 0}
+    if fill:
+        fill_info = _apply_fill(payload, fill)
+        say(f"fill: {fill_info['applied']} value(s) merged from {fill_path}")
+        if fill_info["applied"]:
+            notes.append(f"{fill_info['applied']} field(s) carry agent-written text from "
+                         f"{os.path.basename(fill_path)} (not extracted from the PDF)")
+            # `complete` only when nothing is left blank: a half-filled
+            # translation is still partial, and saying otherwise is a lie.
+            if status == "partial" and fill_info["segments"] and \
+                    not fill_info["untranslated"]:
+                status = "complete"
+                # The composer's note says the field is still empty; after a
+                # complete fill that sentence is false, so it must go.
+                uncertainty["notes"] = [n for n in uncertainty.get("notes", [])
+                                        if not _STALE_EMPTY.search(n)]
+                uncertainty["notes"].append(
+                    "every field the composer left blank was filled from "
+                    f"{os.path.basename(fill_path)}; the wording is the agent's, "
+                    "not the PDF's")
+
     case_id = _case_id(doc.get("case") or {}, doc, os.path.basename(os.path.abspath(args.input)))
     # An input we could not read at all is `unable`, not `partial`: partial would
     # suggest we read some of it.  The reason travels with the result.
@@ -155,6 +238,29 @@ def main(argv: List[str] | None = None) -> int:
         uncertainty.setdefault("notes", []).append(
             f"input could not be read: {err.get('kind')} — {err.get('detail')}")
         say(f"unreadable input: {err.get('kind')}")
+
+    # Nothing to read at all: a mount pointing at the wrong path, a directory
+    # with no PDF, an empty directory.  Same rule as above -- `unable`, never
+    # `partial`, because partial would claim we read part of it.
+    problem = (doc.get("input") or {}).get("problem")
+    if problem and not d.get("blocks"):
+        status = "unable"
+        uncertainty.setdefault("notes", []).append(
+            f"no document to read: {problem.get('kind')} — {problem.get('detail')}")
+        say(f"no document: {problem.get('kind')} — {problem.get('detail')}")
+
+    # A real PDF that yielded no text at all: a scan with no OCR engine, or a
+    # file whose pages are blank.  Nothing was recovered, so `partial` would
+    # overstate it -- `unable` plus the reason.  A `complete` from --fill is
+    # left alone: the agent wrote that text, and it did not come from the PDF.
+    if status == "partial" and not any(d.get(k) for k in ("blocks", "tables", "references")):
+        ocr_missing = "ocr" in " ".join(log).lower()
+        status = "unable"
+        uncertainty.setdefault("notes", []).append(
+            "nothing was extracted: the PDF has no usable text layer"
+            + (" and no OCR engine is installed (--probe lists what is available)"
+               if ocr_missing else ""))
+        say("status=unable: zero blocks, zero tables, zero references")
 
     # Engine degradation must be visible in result.json itself, not only in
     # run.log: the grader (and any agent consuming the result) reads result.json
@@ -182,6 +288,10 @@ def main(argv: List[str] | None = None) -> int:
             json.dump(leftover, fh, ensure_ascii=False, indent=1)
         say(f"extra slices -> payload.json ({len(leftover)} keys: {list(leftover)[:6]})")
     res["run"] = {"profile": args.profile, "engine": backend,
+                  "fill": {"file": os.path.basename(fill_path) if fill_path else None,
+                           "applied": fill_info["applied"],
+                           "segments": fill_info["segments"],
+                           "untranslated": fill_info["untranslated"]},
                   "degraded_engine": degraded_engine,
                   "seconds": round(time.time() - t0, 1),
                   "blocks": len(d.get("blocks", [])), "tables": len(d.get("tables", [])),

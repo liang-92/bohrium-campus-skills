@@ -364,6 +364,25 @@ def _unsupported(f: Field, why: str) -> Any:
     return out
 
 
+def _is_empty(value: Any, depth: int = 0) -> bool:
+    """An answer with no content -- distinct from an answer we could not route.
+
+    A shaped-but-blank object (`{"title": "", "authors": []}`) counts as empty:
+    the keys are placeholders, not findings.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple)):
+        return not value
+    if isinstance(value, dict):
+        if not value:
+            return True
+        return depth < 3 and all(_is_empty(v, depth + 1) for v in value.values())
+    return False
+
+
 def resolve(f: Field, bag: Dict[str, Any], payload: Dict[str, Any]) -> Resolution:
     key = _norm(f.name)
 
@@ -428,6 +447,10 @@ def adapt(payload: Dict[str, Any], fields: List[Field] | List[str],
     body: Dict[str, Any] = {}
     status_map: Dict[str, Any] = {}
     used: List[str] = []
+    # With nothing parsed, every field is empty by necessity, not by finding.
+    # The routing (method) is still informative, but the confidence must not
+    # read as "we checked and the paper really has no figures".
+    no_doc = not (doc or {}).get("document")
 
     for f in fields:
         r = resolve(f, bag, payload or {})
@@ -442,6 +465,11 @@ def adapt(payload: Dict[str, Any], fields: List[Field] | List[str],
         body[f.name] = r.value
         entry = {"method": r.method, "confidence": r.confidence,
                  "declared_type": f.kind}
+        if _is_empty(r.value) and r.method != "unsupported":
+            entry["empty"] = True
+            if no_doc:
+                entry["confidence"] = 0.0
+                entry["why_empty"] = "no document was parsed from the input"
         if not r.type_ok:
             entry["type_mismatch"] = True
         if f.enum:

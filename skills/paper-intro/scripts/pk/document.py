@@ -369,6 +369,8 @@ def analyze(input_dir: str, ocr: bool = True) -> Dict[str, Any]:
         "extra_pdfs": [],
         "quality": {},
     }
+    if man.get("problem"):
+        doc["input"]["problem"] = man["problem"]
     if man["primary_pdf"]:
         doc["document"] = analyze_path(man["primary_pdf"], ocr=ocr)
         doc["quality"] = doc["document"]["quality"]

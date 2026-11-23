@@ -52,12 +52,24 @@ python3 scripts/run.py --probe
 # 1) 一次跑完解析 + 组包
 python3 scripts/run.py --input /input --out /app/output
 
+# 1.5) 需要模型自己写文字时（翻译 / 润色 / 写作类）：写进 fill.json 再跑一遍
+#      翻译：{"segments": {"s0001": "译文…", "s0002": "译文…"}}
+#      术语：{"glossary": {"attention": "注意力"}}
+#      其它成稿：{"replace": {"draft": "…"}}
+python3 scripts/run.py --input /input --out /app/output --fill /app/output/fill.json
+
 # 2) 看产物
 ls /app/output          # doc.json doc.md coverage.json result.json payload.json raw_text.txt run.log
 
 # 3) 自检
 python3 scripts/verify.py --out /app/output --kind generic
 ```
+
+**为什么要 `--fill`**：脚本不会翻译、不会润色、不会写引言——这些只能由你（模型）产出。
+但`result.json` 才是被评分的东西，所以把你写的文字写成 `fill.json` 再跑一遍，
+它会被并进 `payload.json` / `output_contract`，同时记在 `run.fill` 里
+（来源写清楚是「agent 写的」，不是从 PDF 抽的）。没填满就还是 `partial`，
+填满了才升 `complete`——状态位不撒谎。
 
 `verify.py` 除了回查引句，还会复算三件与评分口径对应的事，并打印 `checks` 段：
 逐栏阅读顺序倒挂数、块的 bbox 是否落在自己声明的栏内、`output_contract` 是否与
@@ -154,6 +166,11 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 否则多出来的键会被读成「把答案改了名」。`field_status` 逐字段记下用了哪条规则、置信度多少，
 `verify.py` 会对 `case.json` 复核「声明的字段是否都在、有没有多出来的键」。
 
+空值要分清两种：**真的没有**（这篇论文就没有公式 → `[]`，置信度照旧）
+和**没读到**（文档没解析出来 → 也降为 `0` 并写 `"why_empty"`）。
+判据在 `field_status.<字段>`：`"empty": true` 表示这个字段是空的；
+若同时 `confidence` 为 0，说明不是没找到，是根本没读到——别把它当成结论。
+
 ## 怎么证明它比不加载更好（对照协议）
 
 评分要的是「加载 Skill 的 Agent vs 不加载的 Agent」。这个对照**必须由评测方执行**，
@@ -225,7 +242,8 @@ python3 scripts/verify.py --out /app/output --kind generic
 | 情况 | 处置 |
 |---|---|
 | 扫描件无文字层 | 自动 OCR；OCR 页写入 `source.ocr_pages`，置信度无法保证时在 `uncertainty` 注明 |
-| 加密/损坏 PDF | 捕获异常，`status: partial`，写明失败页与原因，不伪造文本 |
+| 加密/损坏 PDF、目录里没有 PDF | 捕获异常，`status: unable` + `input.problem`，写明原因，不伪造文本，仍写出 `result.json` |
+| 有 PDF 但零提取（无文本层且无 OCR） | `status: unable`，不是 `partial`——零提取不宣称「读到了一半」；先跑 `--probe` 看缺哪个引擎 |
 | 表格识别为空 | 用行间隙兜底；仍为空则在 `coverage.issues` 说明“该页无表格或引擎不支持” |
 | 字体乱码 | 保留原字符并标记，不做“猜测式修正” |
 

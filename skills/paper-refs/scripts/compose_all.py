@@ -879,6 +879,17 @@ MODES = {
 def build(mode: str, doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: str | None = None):
     if mode not in MODES:
         raise KeyError(f"unknown mode {mode}")
+    # Every builder reads doc["document"]["..."].  When nothing was parsed there
+    # is nothing to compose, and raising here would leave the caller with no
+    # result.json at all -- the one outcome that is strictly worse than an
+    # honest empty answer.  Say "nothing to work with" and return.
+    if not doc.get("document"):
+        problem = (doc.get("input") or {}).get("problem") or {}
+        why = problem.get("detail") or "no document was parsed from the input"
+        return ({}, [],
+                {"notes": ["nothing to compose: no document was parsed"],
+                 "missing": [], "inferred_fields": []},
+                "unable", [f"composer skipped: {why}"])
     fn = MODES[mode]
     if mode == "latex":
         return fn(doc, case, task, out_dir=out_dir)

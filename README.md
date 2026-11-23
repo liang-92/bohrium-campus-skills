@@ -69,6 +69,12 @@ python3 scripts/run.py --input /input --out /app/output
 `complete|partial|unable` → 三选一。契约没声明的切片不进 `output_contract`，
 另存 `payload.json`——否则多出来的键会被读成「把答案改了名」。
 
+字段值是空的（`[]` / `{}` / `""`）时，`field_status` 会多一个 `"empty": true`：
+空列表可能是**真的没有**（这篇论文就没有公式），也可能是**没读到**（PDF 没文本层）。
+两者的区别放在 `confidence` 上——文档解析成功时空值保留路由置信度（0.90/0.95），
+一个都没解析出来时降到 `0` 并写 `"why_empty": "no document was parsed from the input"`。
+另外，形状齐全但内容全空的 `{"title": "", "authors": []}` 也算空：那些键是占位符，不是发现。
+
 ## 目录结构
 
 ```
@@ -144,9 +150,13 @@ docs/                 方法与基准说明
    | 输入 | 标记 |
    |---|---|
    | 加密 PDF | `status=unable` + 原因；不崩、不假装读到 |
-   | 无文字层扫描件 | OCR 补齐；没装 OCR 引擎则写 `ocr_failed` |
+   | 无文字层扫描件 | OCR 补齐；没装 OCR 引擎则写 `ocr_failed`，`status=unable` |
    | 乱码字体（私用区码点） | `garbled_text_layer.pages`，并对这几页改走 OCR |
    | 页码错乱 / 表格是图片 | `page_order.warning` / `image_tables[]` |
+   | 路径挂了但目录不存在 / 目录里没有 PDF | `input.problem` 写 `missing_input` / `no_pdf`，`status=unable` |
+
+   `partial` 的判据是**真拿到了一部分**（有块、有表或有参考文献）。一个字都没
+   抽出来时是 `unable`——零提取还报 `partial`，等于宣称「读到了一半」。
 4. **无网络**：评审环境可能断网，全部依赖本地库；OCR 仅在系统已有 `tesseract` 时启用。
 
 ## 适用边界

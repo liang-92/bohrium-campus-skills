@@ -88,7 +88,8 @@ python3 scripts/verify.py --out /app/output --kind generic
         "failure": """| 情况 | 处置 |
 |---|---|
 | 扫描件无文字层 | 自动 OCR；OCR 页写入 `source.ocr_pages`，置信度无法保证时在 `uncertainty` 注明 |
-| 加密/损坏 PDF | 捕获异常，`status: partial`，写明失败页与原因，不伪造文本 |
+| 加密/损坏 PDF、目录里没有 PDF | 捕获异常，`status: unable` + `input.problem`，写明原因，不伪造文本，仍写出 `result.json` |
+| 有 PDF 但零提取（无文本层且无 OCR） | `status: unable`，不是 `partial`——零提取不宣称「读到了一半」；先跑 `--probe` 看缺哪个引擎 |
 | 表格识别为空 | 用行间隙兜底；仍为空则在 `coverage.issues` 说明“该页无表格或引擎不支持” |
 | 字体乱码 | 保留原字符并标记，不做“猜测式修正” |""",
         "limits": "不解释图表科学含义；不做翻译或改写；对艺术排版（海报、竖排）只保证可读顺序，不保证视觉对应。",

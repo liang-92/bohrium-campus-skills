@@ -119,6 +119,8 @@
 | 乱码字体 | 字体缺 `toUnicode`，文字层是私用区码点 | 按页统计 PUA 占比（>2% 判定），对这几页改走 OCR，并记 `garbled_text_layer` |
 | 页码错乱 | 重排过的 PDF / 扫描书 | 在**页眉页脚剔除前**读页脚数字，非单调或重复写 `page_order.warning` |
 | 表格是图片 | 有 `Table N` 图注、区域内无文字层 | 记 `image_tables[]`（页码 + 图注），明确「单元格不在 tables[] 里，不要编造」 |
+| 挂载路径错 / 目录无 PDF | 一个能读的文件都没有 | `input.problem.kind = missing_input / empty / no_pdf`，`status=unable`，仍写出 `result.json` |
+| 有 PDF 但零提取 | 无文字层且没有 OCR 引擎 | `status=unable`（不是 `partial`）+ 提示装 tesseract；`--probe` 能先查出缺哪一样 |
 
 这四类（加密、乱码、页码、图片表格）会产出「看起来正常、其实错」的结果，
 所以每一条都有独立字段而不只是日志一行；`_test/test_defects.py` 用合成页字典

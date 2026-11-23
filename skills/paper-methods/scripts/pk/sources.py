@@ -107,7 +107,21 @@ def discover(root: str, max_files: int = 200) -> Dict[str, Any]:
         "primary_pdf": _pick_primary(by_role.get("pdf", [])),
         "case_json": _first_named(files, {"case.json"}),
         "task_md": _first_named(files, {"task.md", "task.markdown", "prompt.md"}),
+        # Why there is nothing to read.  A mount that points at the wrong path
+        # is the most common harness mistake, and it must not be reported as
+        # "read some of it" (partial) nor crash before result.json exists.
+        "problem": _problem(root, files, by_role.get("pdf", [])),
     }
+
+
+def _problem(root: str, files: List[Dict[str, Any]], pdfs: List[str]) -> Dict[str, Any] | None:
+    if not os.path.isdir(root):
+        return {"kind": "missing_input", "detail": f"input directory does not exist: {root}"}
+    if not files:
+        return {"kind": "empty", "detail": f"input directory holds no readable file: {root}"}
+    if not pdfs:
+        return {"kind": "no_pdf", "detail": f"{len(files)} file(s) found, none is a PDF"}
+    return None
 
 
 def _first_named(files: Iterable[Dict[str, Any]], names: set) -> str | None:

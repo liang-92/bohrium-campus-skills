@@ -52,12 +52,24 @@ python3 scripts/run.py --probe
 # 1) 一次跑完解析 + 组包
 python3 scripts/run.py --input /input --out /app/output
 
+# 1.5) 需要模型自己写文字时（翻译 / 润色 / 写作类）：写进 fill.json 再跑一遍
+#      翻译：{"segments": {"s0001": "译文…", "s0002": "译文…"}}
+#      术语：{"glossary": {"attention": "注意力"}}
+#      其它成稿：{"replace": {"draft": "…"}}
+python3 scripts/run.py --input /input --out /app/output --fill /app/output/fill.json
+
 # 2) 看产物
 ls /app/output          # doc.json doc.md coverage.json result.json payload.json raw_text.txt run.log
 
 # 3) 自检
 python3 scripts/verify.py --out /app/output --kind generic
 ```
+
+**为什么要 `--fill`**：脚本不会翻译、不会润色、不会写引言——这些只能由你（模型）产出。
+但`result.json` 才是被评分的东西，所以把你写的文字写成 `fill.json` 再跑一遍，
+它会被并进 `payload.json` / `output_contract`，同时记在 `run.fill` 里
+（来源写清楚是「agent 写的」，不是从 PDF 抽的）。没填满就还是 `partial`，
+填满了才升 `complete`——状态位不撒谎。
 
 `verify.py` 除了回查引句，还会复算三件与评分口径对应的事，并打印 `checks` 段：
 逐栏阅读顺序倒挂数、块的 bbox 是否落在自己声明的栏内、`output_contract` 是否与
@@ -142,6 +154,11 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 契约没声明的切片不会塞进 `output_contract`，而是另存 `payload.json`——
 否则多出来的键会被读成「把答案改了名」。`field_status` 逐字段记下用了哪条规则、置信度多少，
 `verify.py` 会对 `case.json` 复核「声明的字段是否都在、有没有多出来的键」。
+
+空值要分清两种：**真的没有**（这篇论文就没有公式 → `[]`，置信度照旧）
+和**没读到**（文档没解析出来 → 也降为 `0` 并写 `"why_empty"`）。
+判据在 `field_status.<字段>`：`"empty": true` 表示这个字段是空的；
+若同时 `confidence` 为 0，说明不是没找到，是根本没读到——别把它当成结论。
 
 ## 怎么证明它比不加载更好（对照协议）
 
