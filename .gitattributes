@@ -1,0 +1,13 @@
+# Keep the repository byte-identical to what the platform will read.
+# A CRLF `---` line can break YAML front-matter parsing on the grader side,
+# so every text file is stored and checked out with LF.
+* text=auto eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.sh text eol=lf
+*.pdf binary
+*.png binary

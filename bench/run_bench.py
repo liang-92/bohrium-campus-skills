@@ -107,7 +107,7 @@ def main():
               "- Determinism matters because the platform runs each case three times per condition.",
               "", "Regenerate with `python3 bench/run_bench.py`."]
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, "w", encoding="utf-8") as fh:
+    with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")
     print(json.dumps({"rows": len(rows), "out": args.out,
                       "deterministic": all(determined.values()) if determined else False}, indent=2))

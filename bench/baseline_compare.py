@@ -198,7 +198,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return 0
-    with open(args.out, "w", encoding="utf-8") as fh:
+    with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(to_markdown(rows))
     print(json.dumps({"rows": len(rows), "out": args.out}, ensure_ascii=False))
     return 0

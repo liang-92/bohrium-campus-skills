@@ -139,7 +139,7 @@ def write_examples(dest: str, skill: dict, root: str) -> None:
             "status": "complete|partial|unable",
         },
     }
-    with open(os.path.join(dest, "case.example.json"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(dest, "case.example.json"), "w", encoding="utf-8", newline="\n") as fh:
         json.dump(case, fh, ensure_ascii=False, indent=2)
     result = {
         "case_id": "example-not-a-real-case",
@@ -149,13 +149,13 @@ def write_examples(dest: str, skill: dict, root: str) -> None:
         "uncertainty": {"notes": ["这是接口示意，不是任何真实案例的答案"], "missing": []},
         "provenance": {"pdf": "example.pdf", "pages": 0, "engine": "paperkit 1.0.0"},
     }
-    with open(os.path.join(dest, "result.example.json"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(dest, "result.example.json"), "w", encoding="utf-8", newline="\n") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=2)
 
 
 def write_resources(dest: str) -> None:
     os.makedirs(dest, exist_ok=True)
-    with open(os.path.join(dest, "resources.yaml"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(dest, "resources.yaml"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write("# Declared runtime for this skill. Bundled paths are relative to this directory.\n")
         fh.write(COMMON_ENV)
 
@@ -172,16 +172,16 @@ def build_one(skill: dict, root: str) -> dict:
     shutil.copy2(os.path.join(root, "core", "compose_all.py"), os.path.join(out, "scripts", "compose_all.py"))
     shutil.copy2(os.path.join(root, "core", "verify.py"), os.path.join(out, "scripts", "verify.py"))
 
-    with open(os.path.join(out, "SKILL.md"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(out, "SKILL.md"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(render_md(skill))
-    with open(os.path.join(out, "GITHUB_URL.txt"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(out, "GITHUB_URL.txt"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write("https://github.com/liang-92/bohrium-campus-skills/tree/main/skills/%s\n" % skill["slug"])
         fh.write("SKILL.md\n")
     write_resources(os.path.join(out, "environment"))
     write_examples(os.path.join(out, "examples"), skill, root)
 
     # the package carries its own profile so `run.py` needs no flags
-    with open(os.path.join(out, "scripts", "profile.txt"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(out, "scripts", "profile.txt"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(skill["mode"] + "\n")
 
     files, total, biggest = 0, 0, ("", 0)
