@@ -22,5 +22,9 @@ bench/pdfs/*.pdf
 .workbuddy/
 _research/
 challenges/
-trace/
+# raw session exports are large and contain prompt text; the derived trace is
+# shipped instead, and only the round that is documented in docs/usage.md
+trace/*
+!trace/README.md
+!trace/round2-steps.jsonl
 *.zip
