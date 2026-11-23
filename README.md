@@ -62,6 +62,7 @@ core/run.py           入口脚本（每个 Skill 里都有一份）
 tools/build_skills.py 从 core 生成十个独立 Skill 包
 skills/<slug>/        提交物：SKILL.md + scripts + environment + examples
 bench/run_bench.py    本地回归基准（可复现、可确定性校验）
+bench/baseline_compare.py  朴素抽取 vs paperkit 的量化对照
 docs/                 方法与基准说明
 ```
 
@@ -80,6 +81,20 @@ docs/                 方法与基准说明
 
 「阅读顺序倒挂 = 0」指没有任何块的页码相对前一块回退；两次运行输出指纹一致，
 说明结果确定。完整表格见 [`docs/benchmark.md`](docs/benchmark.md)。
+
+## 和「朴素抽取」的对照
+
+同一份 PDF、同一个抽取引擎，只换版面逻辑，跑 `python3 bench/baseline_compare.py` 可复现：
+
+| 文件 | 双栏页 | 串栏拼接（朴素→paperkit） | 断词残留 | 竖排边条残段 |
+|---|---|---|---|---|
+| 1706.03762 (单栏) | 2 | 29 → **0** | 16 → 0 | 13 → 0 |
+| 1810.04805 (BERT) | 16 | 672 → **0** | 330 → 4 | 2 → 0 |
+| acl2020 (ACL) | 5 | 213 → **0** | 113 → 0 | 0 → 0 |
+
+「串栏拼接」是几何真值：同一 y 高度上左右两栏各有一行，按 y 排序必然焊成一句。
+「竖排边条残段」是 arXiv 左侧 90° 旋转的提交戳被切成的碎片。
+口径、复现命令与局限见 [`docs/baseline.md`](docs/baseline.md)。
 
 ## 设计原则
 

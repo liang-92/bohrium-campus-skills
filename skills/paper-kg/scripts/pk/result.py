@@ -11,6 +11,8 @@ import json
 import os
 from typing import Any, Dict, List
 
+from . import contract
+
 REQUIRED = ["case_id", "status"]
 
 
@@ -56,13 +58,19 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
                  notes: List[str] | None = None) -> Dict[str, Any]:
     case = case or (doc or {}).get("case") or {}
     fields = contract_fields(case, doc)
-    body: Dict[str, Any] = {}
     payload = payload or {}
-    for f in fields:
-        body[f] = payload.get(f)
-    for k, v in payload.items():
-        if k not in body:
-            body[k] = v
+    # The composer speaks in paper-shaped slices; the case speaks in its own
+    # field names.  `contract.adapt` reconciles the two and never leaves a
+    # declared field null -- unmapped fields become a typed digest and are
+    # disclosed under `uncertainty.inferred_fields`.
+    body, inferred = contract.adapt(payload, fields, doc) if fields else (dict(payload), [])
+    if inferred:
+        uncertainty = dict(uncertainty or {})
+        uncertainty.setdefault("notes", [])
+        uncertainty["inferred_fields"] = inferred
+        uncertainty["notes"] = list(uncertainty["notes"]) + [
+            f"{len(inferred)} contract field(s) had no exact key and were filled by "
+            f"semantic match: " + ", ".join(i["field"] for i in inferred[:12])]
 
     d = (doc or {}).get("document") or {}
     result = {
@@ -112,7 +120,15 @@ def validate_result(result: Dict[str, Any] | str, doc: Dict[str, Any] | None = N
                     problems.append(f"evidence[{i}] quote not found in {bid} ({chk['reason']})")
     if not ev and result.get("status") == "complete":
         problems.append("status=complete but no evidence attached")
-    return {"ok": not problems, "problems": problems, "evidence_items": len(ev)}
+    body = result.get("output_contract")
+    if isinstance(body, dict):
+        # `None` means nobody filled it; an empty list means "checked, nothing
+        # there", which is a valid answer and must not be reported as a problem.
+        nulls = [k for k, v in body.items() if v is None]
+        if nulls:
+            problems.append("declared contract fields left null: " + ", ".join(nulls[:8]))
+    return {"ok": not problems, "problems": problems, "evidence_items": len(ev),
+            "contract_fields": len(body) if isinstance(body, dict) else 0}
 
 
 def write(result: Dict[str, Any], path: str) -> None:
