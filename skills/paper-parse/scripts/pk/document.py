@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, List
 
 from . import backends, layout, sources, structure
 from .evidence import locator, quote
+
+# Private Use Area + the replacement character: what a font without a usable
+# `toUnicode` map produces.  See `garbled_pages`.
+PUA_CHAR = re.compile("[\ue000-\uf8ff\ufffd]")
+CAPTION_TABLE = structure.CAPTION_TABLE
 
 
 def _flatten(extracted: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -35,16 +41,21 @@ def _flatten(extracted: Dict[str, Any]) -> List[Dict[str, Any]]:
     return pages
 
 
-def _ocr_pages(pdf_path: str, pages: List[Dict[str, Any]], lang: str = "eng") -> List[int]:
+def _ocr_pages(pdf_path: str, pages: List[Dict[str, Any]], lang: str = "eng",
+               force: set | None = None) -> List[int]:
     """OCR pages that have almost no text layer but do carry images.
 
     A page that needed OCR and did not get it is marked `ocr_failed`, so the
     report can say "OCR was required here but no engine was available" instead
-    of silently returning an empty page.
+    of silently returning an empty page.  `force` re-OCRs pages whose text layer
+    exists but is garbage (a font without a usable `toUnicode` map).
     """
     done: List[int] = []
+    force = force or set()
     for p in pages:
-        if p["chars"] >= backends.MIN_PAGE_CHARS or not p["images"]:
+        if p["number"] in force:
+            pass
+        elif p["chars"] >= backends.MIN_PAGE_CHARS or not p["images"]:
             continue
         png = backends.render_page(pdf_path, p["number"], dpi=220)
         if not png:
@@ -104,12 +115,25 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
     pages = _flatten(extracted)
     if not pages:
         return _unreadable(pdf_path, extracted)
-    ocr_done = _ocr_pages(pdf_path, pages) if ocr else []
+    # A page whose text layer is font garbage must be OCR'd, not trusted: the
+    # PUA code points look like text and would poison every downstream field.
+    garbled = garbled_pages(pages)
+    force = set(garbled["pages"]) if ocr else set()
+    ocr_done = _ocr_pages(pdf_path, pages, force=force) if ocr else []
+    if garbled["pages"]:
+        for p in pages:
+            if p["number"] in garbled["pages"] and p.get("filled_by") == "ocr":
+                p["text_layer_garbled"] = True
+    garbled = garbled_pages(pages)     # recount after OCR
 
     # Snapshot the engine's own text before any cleaning.  Reviewers can diff
     # this against the PDF text layer to check "逐字一致" instead of trusting us.
     verbatim = "\n".join(l["text"] for p in pages for l in p["lines"])
 
+    # Read the printed page numbers *before* the running-head stripper runs: it
+    # normalises digits, so a footer "1", "2", "3" counts as a repeated line and
+    # would be removed -- taking the pagination evidence with it.
+    order = page_order(pages)
     heads = layout.strip_running_heads(pages)
     body = layout.body_font_size(pages)
     for p in pages:
@@ -136,6 +160,7 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
     structure.attach_captions(blocks, tables, figures)
     figures, figures_dropped = structure.prune_figures(figures)
     table_region_blocks = structure.mark_table_blocks(blocks, tables)
+    image_tables = find_image_tables(pages, blocks, tables)
 
     formulas = structure.find_formulas(blocks)
     references = structure.find_references(blocks)
@@ -164,6 +189,9 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
         "tables": tables,
         "figures": figures,
         "figures_dropped": figures_dropped,
+        "image_tables": image_tables,
+        "page_order": order,
+        "garbled": garbled,
         "formulas": formulas,
         "references": references,
         "page_stats": [{"page": p["number"], "chars": p["chars"], "lines": len(p["lines"]),
@@ -175,13 +203,15 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
         "verbatim_text": verbatim,
         "verbatim_chars": len(verbatim),
         "quality": _quality(pages, blocks, tables, formulas, references, empty_pages,
-                            figures, figures_dropped, table_region_blocks),
+                            figures, figures_dropped, table_region_blocks,
+                            garbled, order, image_tables),
     }
     return doc
 
 
 def _quality(pages, blocks, tables, formulas, references, empty_pages,
-             figures=(), figures_dropped=(), table_region_blocks=0) -> Dict[str, Any]:
+             figures=(), figures_dropped=(), table_region_blocks=0,
+             garbled=None, order=None, image_tables=()) -> Dict[str, Any]:
     total_chars = sum(p["chars"] for p in pages)
     issues: List[str] = []
     if empty_pages:
@@ -197,6 +227,22 @@ def _quality(pages, blocks, tables, formulas, references, empty_pages,
     if not figures:
         issues.append("no figures detected (raster images and vector chart clusters both "
                       "came up empty)")
+    if garbled and garbled.get("pua_chars"):
+        pages_hit = garbled.get("pages") or []
+        issues.append(
+            f"{garbled['pua_chars']} private-use/replacement character(s) suggest a font "
+            f"without a usable toUnicode map"
+            + (f"; OCR replaced the text layer on page(s) {pages_hit[:8]}" if pages_hit
+               else "; install tesseract so those pages can be re-OCR'd"))
+    if order and order.get("warning"):
+        issues.append("printed page numbers are not in order: "
+                      + str(order.get("breaks")[:5])
+                      + " — page references in downstream answers may be off")
+    if image_tables:
+        issues.append(f"{len(image_tables)} table(s) look like images (caption present, no "
+                      f"text layer in the region): pages "
+                      + str(sorted({t['page'] for t in image_tables})[:8])
+                      + "; their cells are NOT in tables[] and must not be invented")
     return {
         "pages": len(pages),
         "chars": total_chars,
@@ -206,11 +252,105 @@ def _quality(pages, blocks, tables, formulas, references, empty_pages,
         "figures": len(figures),
         "figures_dropped": len(figures_dropped),
         "blocks_in_table_regions": table_region_blocks,
+        "image_tables": len(image_tables),
+        "page_order_warning": bool(order and order.get("warning")),
+        "garbled_chars": (garbled or {}).get("pua_chars", 0),
         "formulas": len(formulas),
         "references": len(references),
         "empty_pages": empty_pages,
         "issues": issues,
     }
+
+
+def garbled_pages(pages: List[Dict[str, Any]], threshold: float = 0.02) -> Dict[str, Any]:
+    """Pages whose text layer is font garbage rather than text.
+
+    A PDF font without a `toUnicode` map yields Private Use Area code points
+    (U+E000-U+F8FF) or U+FFFD.  That text looks non-empty, so a naive pipeline
+    silently returns mojibake -- which would break "逐字一致" in the worst way.
+    Counted per page so the caller can OCR just those pages.
+    """
+    total = bad = 0
+    hits: List[int] = []
+    per_page: Dict[int, int] = {}
+    for p in pages:
+        n = 0
+        for l in p.get("lines", []):
+            text = l.get("text") or ""
+            total += len(text)
+            n += sum(1 for ch in text if PUA_CHAR.match(ch))
+        if n:
+            per_page[p["number"]] = n
+            bad += n
+        if p.get("chars") and n / max(1, p["chars"]) > threshold:
+            hits.append(p["number"])
+    return {"pua_chars": bad, "chars": total,
+            "ratio": round(bad / total, 4) if total else 0.0,
+            "pages": hits, "per_page": per_page}
+
+
+def page_order(pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Read the printed page numbers and say whether they run in order.
+
+    Scanned books and re-assembled PDFs are sometimes paginated out of order,
+    which makes every "see page N" claim in the result wrong.  Only stand-alone
+    numbers in the top/bottom margin are treated as page numbers.
+    """
+    numbers: List[Any] = []
+    for p in pages:
+        h = float(p.get("height") or 0)
+        hit = None
+        for l in p.get("lines", []):
+            text = (l.get("text") or "").strip()
+            if not re.fullmatch(r"[-–—]?\s*\d{1,4}\s*[-–—]?", text):
+                continue
+            y0, y1 = float(l["bbox"][1]), float(l["bbox"][3])
+            if h and (y1 < h * 0.1 or y0 > h * 0.9):
+                hit = int(re.sub(r"\D", "", text))
+                break
+        numbers.append(hit)
+    found = [n for n in numbers if n is not None]
+    dups = sorted({n for n in found if found.count(n) > 1})
+    breaks = [(a, b) for a, b in zip(found, found[1:]) if b != a + 1]
+    return {"printed_numbers": numbers, "found": len(found),
+            "in_order": not breaks, "duplicates": dups[:10],
+            "breaks": breaks[:10],
+            "warning": bool(found and len(found) >= 3 and breaks)}
+
+
+def _vgap(a: List[float], b: List[float]) -> float:
+    """Vertical distance between two boxes; 0 when they overlap."""
+    if a[3] < b[1]:
+        return b[1] - a[3]
+    if b[3] < a[1]:
+        return a[1] - b[3]
+    return 0.0
+
+
+def find_image_tables(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]],
+                      tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Tables that exist only as a picture.
+
+    A `Table N` caption with no extracted table beside it means the table is an
+    image: there is no text layer to fall back on, so the honest answer is to
+    say so rather than report "no tables".  Only pages that carry images are
+    considered, so a born-digital paper never triggers this.
+    """
+    out: List[Dict[str, Any]] = []
+    for p in pages:
+        if not p.get("images"):
+            continue
+        for b in blocks:
+            if b.get("page") != p["number"] or not CAPTION_TABLE.match(b.get("text") or ""):
+                continue
+            if any(t.get("page") == p["number"] and t.get("bbox")
+                   and _vgap(t["bbox"], b["bbox"]) < 120 for t in tables):
+                continue      # this caption already belongs to an extracted table
+            near = [img for img in p["images"] if _vgap(img, b["bbox"]) < 220]
+            if near:
+                out.append({"page": p["number"], "caption": b["text"][:160],
+                            "caption_block": b.get("id"), "image_bbox": near[0]})
+    return out
 
 
 def analyze(input_dir: str, ocr: bool = True) -> Dict[str, Any]:

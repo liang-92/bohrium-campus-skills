@@ -97,6 +97,13 @@ def main(argv: List[str] | None = None) -> int:
         json.dump({"quality": doc.get("quality", {}),
                    "page_stats": d.get("page_stats", []),
                    "removed_running_heads": doc.get("document", {}).get("running_heads_removed"),
+                   # rubric-named failure modes: each one is reported instead of
+                   # being silently smoothed over
+                   "page_order": d.get("page_order"),
+                   "garbled_text_layer": d.get("garbled"),
+                   "image_tables": d.get("image_tables"),
+                   "figures_dropped": d.get("figures_dropped"),
+                   "engine_attempts": (d.get("source") or {}).get("attempts"),
                    "verbatim": {"chars": d.get("verbatim_chars"),
                                 "block_raw_chars": raw_total,
                                 "raw_text_file": "raw_text.txt" if verbatim else None,
