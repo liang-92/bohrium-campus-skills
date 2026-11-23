@@ -3,8 +3,8 @@
   "note": "最小输入示例；正式案例由平台提供，此处仅说明接口，不代表真实评测数据。",
   "topic": "阅读14 Nanopublication",
   "output_contract": {
-    "document": "parsed structure",
-    "evidence": "list of block-level anchors",
+    "assertions": "list of assertion",
+    "provenance": "example value, see result.example.json",
     "status": "complete|partial|unable"
   }
 }

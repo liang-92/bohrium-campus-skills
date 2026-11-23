@@ -1,0 +1,12 @@
+{
+  "case_id": "self-methods",
+  "topic": "写作09 方法与实验章节写作",
+  "note": "自建方法章用例：5 个超参可从原文取到，随机种子原文未报告（应进 missing 而非补默认值）。",
+  "output_contract": {
+    "parameters": "name/value/context",
+    "datasets": "list",
+    "reproducibility_checklist": "found/missing",
+    "draft": "skeleton",
+    "status": "complete|partial|unable"
+  }
+}

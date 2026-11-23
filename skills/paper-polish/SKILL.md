@@ -88,8 +88,10 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
    缩写（don't）、名词化过重，逐句给 `flags` 与 block id。
 2. **术语一致性**：`X (ABC)` 首次定义、`dataset` vs `data set` 等拼写变体、缩写重复定义。
 3. **文体判定**：期刊论文 / 学位论文 / 基金申请 / 审稿回复，语气与主语策略不同。
-4. **改写（Agent 执行）**：按 `edit_record_schema` 逐条产出，一条记录只改一处，
-   `kept` 字段列出该句必须保留的数字、单位与引用。
+4. **改写（Agent 执行）**：脚本先给出**空改写队列** `rewrites[]`——每条带 block、原句、
+   以及 `kept`（该句必须原样保留的数字/单位/引用，由保护令牌抽出）。Agent 只需补
+   `revised` 与 `reason`，一条记录只改一处。含数字或引用的句子即使没有文体问题也会进队列，
+   因为它们才是改写最容易改坏的对象。
 5. **守住语义**：数字、单位、引用编号、否定范围、限定词强度、因果/相关措辞不得变化；
    违反时宁可少改。
 
@@ -98,7 +100,8 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 | 字段 | 内容 |
 |---|---|
 | `genre` | 判定出的文体 |
-| `sentence_issues[]` | block、原句、flags |
+| `sentence_issues[]` | block、原句、flags、`protected` 令牌 |
+| `rewrites[]` | 改写队列骨架：`original`、`revised`（待填）、`kept`、`reason` |
 | `consistency[]` | 术语/拼写/缩写不一致 |
 | `edit_record_schema` | 修改记录的字段约定 |
 | `guardrails` | 改写红线 |

@@ -1,35 +1,51 @@
 {
   "case_id": "example-not-a-real-case",
-  "status": "partial",
+  "status": "complete",
   "output_contract": {
-    "document": {
-      "title": "…",
-      "sections": [],
-      "block_count": 0
+    "problem_statements": [
+      {
+        "text": "Recurrent models preclude parallelization within a sequence.",
+        "block": "p01-b013",
+        "page": 1
+      }
+    ],
+    "gap_statements": [
+      {
+        "text": "Attention had not been used without recurrence.",
+        "block": "p01-b014",
+        "page": 1
+      }
+    ],
+    "draft": {
+      "status": "written",
+      "paragraphs": [
+        {
+          "role": "context",
+          "text": "（示例段落）",
+          "citations": [
+            "1"
+          ]
+        }
+      ]
     },
-    "evidence": [],
-    "status": "partial"
+    "status": "complete"
   },
   "field_status": {
-    "document": {
-      "method": "exact",
-      "confidence": 1.0,
-      "declared_type": "object"
+    "problem_statements": {
+      "method": "example",
+      "confidence": 1.0
     },
-    "evidence": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "unknown"
+    "gap_statements": {
+      "method": "example",
+      "confidence": 1.0
+    },
+    "draft": {
+      "method": "example",
+      "confidence": 1.0
     },
     "status": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "string",
-      "enum": [
-        "complete",
-        "partial",
-        "unable"
-      ]
+      "method": "example",
+      "confidence": 1.0
     }
   },
   "evidence": [
@@ -41,7 +57,7 @@
   ],
   "uncertainty": {
     "notes": [
-      "这是接口示意，不是任何真实案例的答案"
+      "这是接口示意，字段值不是任何真实案例的答案"
     ],
     "missing": []
   },

@@ -1,0 +1,6 @@
+{
+  "requires_files": [
+    "main.tex"
+  ],
+  "requires_static_check": true
+}

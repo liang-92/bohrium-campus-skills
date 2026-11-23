@@ -3,8 +3,9 @@
   "note": "最小输入示例；正式案例由平台提供，此处仅说明接口，不代表真实评测数据。",
   "topic": "写作13 LaTeX 写作与编译",
   "output_contract": {
-    "document": "parsed structure",
-    "evidence": "list of block-level anchors",
+    "files": "list of file",
+    "compile": "example value, see result.example.json",
+    "tex": "example value, see result.example.json",
     "status": "complete|partial|unable"
   }
 }

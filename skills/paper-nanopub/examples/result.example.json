@@ -1,35 +1,35 @@
 {
   "case_id": "example-not-a-real-case",
-  "status": "partial",
+  "status": "complete",
   "output_contract": {
-    "document": {
-      "title": "…",
-      "sections": [],
-      "block_count": 0
+    "assertions": [
+      {
+        "id": "a1",
+        "claim": "self-attention replaces recurrence",
+        "type": "method",
+        "quote": "dispensing with recurrence and convolutions entirely",
+        "block": "p01-b013",
+        "page": 1
+      }
+    ],
+    "provenance": {
+      "pdf": "1706.03762v7.pdf",
+      "block": "p01-b013"
     },
-    "evidence": [],
-    "status": "partial"
+    "status": "complete"
   },
   "field_status": {
-    "document": {
-      "method": "exact",
-      "confidence": 1.0,
-      "declared_type": "object"
+    "assertions": {
+      "method": "example",
+      "confidence": 1.0
     },
-    "evidence": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "unknown"
+    "provenance": {
+      "method": "example",
+      "confidence": 1.0
     },
     "status": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "string",
-      "enum": [
-        "complete",
-        "partial",
-        "unable"
-      ]
+      "method": "example",
+      "confidence": 1.0
     }
   },
   "evidence": [
@@ -41,7 +41,7 @@
   ],
   "uncertainty": {
     "notes": [
-      "这是接口示意，不是任何真实案例的答案"
+      "这是接口示意，字段值不是任何真实案例的答案"
     ],
     "missing": []
   },

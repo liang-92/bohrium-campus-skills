@@ -3,8 +3,8 @@
   "note": "最小输入示例；正式案例由平台提供，此处仅说明接口，不代表真实评测数据。",
   "topic": "阅读10 文献总结与结构化笔记",
   "output_contract": {
-    "document": "parsed structure",
-    "evidence": "list of block-level anchors",
+    "paper_card": "example value, see result.example.json",
+    "section_notes": "list of section_note",
     "status": "complete|partial|unable"
   }
 }

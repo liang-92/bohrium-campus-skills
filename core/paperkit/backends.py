@@ -109,6 +109,167 @@ def _extract_fitz(path: str) -> Dict[str, Any] | None:
     return {"backend": _fitz_version() or "pymupdf", "pages": pages}
 
 
+def _lines_in(page, box) -> List[Dict[str, Any]]:
+    """Text lines inside `box`, each with its baseline.
+
+    The baseline is what defines a table row.  The engine's own cell rectangles
+    sit on *text-line boundaries*, so a cell box overlaps the neighbouring row
+    and any box-based read (``get_textbox``, ``get_text(clip=...)``) pulls that
+    row in -- which is how tables come back with every data row duplicated.
+    """
+    out: List[Dict[str, Any]] = []
+    try:
+        d = page.get_text("dict")
+    except Exception:
+        return out
+    for blk in d.get("blocks", []):
+        for ln in blk.get("lines", []):
+            spans = ln.get("spans", [])
+            if not spans:
+                continue
+            txt = "".join(s.get("text", "") for s in spans)
+            if not txt.strip():
+                continue
+            b = ln.get("bbox", (0, 0, 0, 0))
+            if b[1] > box[3] + 1 or b[3] < box[1] - 1:
+                continue
+            base = spans[0].get("origin", (0, b[3]))[1]
+            out.append({"y": float(base), "x0": float(b[0]), "x1": float(b[2]),
+                        "text": re.sub(r"[ \t]+", " ", txt).strip()})
+    return out
+
+
+def _column_spans(box, t) -> List[tuple]:
+    xs: List[float] = []
+    for row in getattr(t, "rows", []) or []:
+        for cell in getattr(row, "cells", []) or []:
+            if cell is None:
+                continue
+            x0 = float(cell[0])
+            if not any(abs(x0 - x) < 3.0 for x in xs):
+                xs.append(x0)
+    xs.sort()
+    edges = [box[0]] + [x for x in xs if x > box[0] + 1]
+    if len(edges) < 2:
+        return []
+    return [(edges[i], edges[i + 1] if i + 1 < len(edges) else box[2])
+            for i in range(len(edges))]
+
+
+def _table_rows_mapped(page, t, engine_rows: List[List[str]]) -> List[List[str]]:
+    """Re-read each engine row from the text line sitting on its baseline.
+
+    The engine's cell text loses spaces ("LayerType") and splits decimals
+    ("241\\n."), but its row *count* matches the number of physical text lines.
+    When the two counts agree, row i is the line i, so the cell text can be
+    replaced by the raw line text -- spaces and decimal points intact.
+    """
+    box = tuple(t.bbox)
+    lines = _lines_in(page, box)
+    if not lines:
+        return []
+    bases: List[float] = []
+    for ln in sorted(lines, key=lambda l: l["y"]):
+        if not bases or abs(ln["y"] - bases[-1]) > 1.6:
+            bases.append(ln["y"])
+    if len(bases) != len(engine_rows):
+        return []
+    spans = _column_spans(box, t)
+    if not spans:
+        return []
+    rows: List[List[str]] = [["" for _ in spans] for _ in bases]
+    for ln in lines:
+        ri = min(range(len(bases)), key=lambda i: abs(bases[i] - ln["y"]))
+        best, best_ov = 0, -1e9
+        for i, (a, b) in enumerate(spans):
+            ov = min(ln["x1"], b) - max(ln["x0"], a)
+            if ov > best_ov:
+                best, best_ov = i, ov
+        prev = rows[ri][best]
+        rows[ri][best] = (prev + "\n" + ln["text"]).strip("\n") if prev else ln["text"]
+    return rows
+
+
+def _table_rows(page, t) -> List[List[str]]:
+    """Rebuild a table's rows from text baselines and column spans."""
+    box = tuple(t.bbox)
+    lines = _lines_in(page, box)
+    if len(lines) < 4:
+        return []
+    spans = _column_spans(box, t)
+    if not spans:
+        return []
+
+    # rows: cluster baselines, tolerance below one line height.
+    lines.sort(key=lambda l: (l["y"], l["x0"]))
+    clusters: List[List[Dict[str, Any]]] = []
+    for ln in lines:
+        if clusters and abs(ln["y"] - clusters[-1][-1]["y"]) <= 1.6:
+            clusters[-1].append(ln)
+        else:
+            clusters.append([ln])
+    if len(clusters) < 2:
+        return []
+
+    rows: List[List[str]] = []
+    for cl in clusters:
+        cells: List[List[str]] = [[] for _ in spans]
+        for ln in cl:
+            best, best_ov = 0, -1.0
+            for i, (a, b) in enumerate(spans):
+                ov = min(ln["x1"], b) - max(ln["x0"], a)
+                if ov > best_ov:
+                    best, best_ov = i, ov
+            cells[best].append(ln["text"])
+        rows.append(["\n".join(c) for c in cells])
+    return rows
+
+
+def _rows_quality(rows: List[List[str]], lines: List[Dict[str, Any]] | None = None) -> int:
+    """Lower is better: duplicated rows, near-empty rows and lost spaces."""
+    flat: List[List[str]] = []
+    for r in rows:
+        cols = [(c or "").split("\n") for c in r]
+        counts = [len(c) for c in cols if any(x.strip() for x in c)]
+        k = counts[0] if counts and len(set(counts)) == 1 else 1
+        if 2 <= k <= 8 and len(counts) >= 2:
+            for i in range(k):
+                flat.append([(c[i] if i < len(c) else "") for c in cols])
+        else:
+            flat.append(["\n".join(c) for c in cols])
+    dups = sum(1 for i in range(1, len(flat)) if flat[i] == flat[i - 1])
+    sparse = sum(1 for r in flat if sum(1 for c in r if c.strip()) <= 1)
+    mangled = sum(1 for r in flat for c in r if re.match(r"^\d+\.$", c.strip()))
+    gap = 0
+    if lines:
+        cell_spaces = sum(c.count(" ") for r in flat for c in r)
+        line_spaces = sum(l["text"].count(" ") for l in lines)
+        gap = max(0, line_spaces - cell_spaces)
+    return dups * 3 + sparse + mangled * 3 + gap
+
+
+def _engine_rows(page, t) -> List[List[str]]:
+    """Cell text read per engine cell box; spaces survive, rows may repeat."""
+    try:
+        import fitz  # type: ignore
+    except Exception:
+        return []
+    rows: List[List[str]] = []
+    try:
+        for row in getattr(t, "rows", []) or []:
+            cells: List[str] = []
+            for cell in getattr(row, "cells", []) or []:
+                if cell is None:
+                    cells.append("")
+                    continue
+                txt = page.get_textbox(fitz.Rect(cell))
+                cells.append(re.sub(r"[ \t]+", " ", txt).strip())
+            rows.append(cells)
+    except Exception:
+        return []
+    return rows if any(any(c for c in r) for r in rows) else []
+
+
 def _fitz_tables(path: str, pages: List[int] | None = None) -> List[Dict[str, Any]]:
     try:
         import fitz  # type: ignore
@@ -126,38 +287,37 @@ def _fitz_tables(path: str, pages: List[int] | None = None) -> List[Dict[str, An
                 continue
             page = doc.load_page(pno)
             try:
-                finder = page.find_tables()
+                # Borderless academic tables line their columns up by text, not
+                # by rules.  `strategy="text"` finds those columns (13 instead of
+                # 3 on the Transformer variation table); the default strategy is
+                # kept as a fallback for older PyMuPDF builds that reject the kw.
+                try:
+                    finder = page.find_tables(strategy="text")
+                    if not getattr(finder, "tables", None):
+                        finder = page.find_tables()
+                except TypeError:
+                    finder = page.find_tables()
             except Exception:
                 continue
             for t in getattr(finder, "tables", []) or []:
-                rows: List[List[str]] = []
-                # `t.extract()` jams words together when a cell is tight
-                # ("LayerType" for "Layer Type").  Re-reading each cell box with
-                # `get_textbox` keeps the spaces, and falls back to extract()
-                # when the cell boxes are unusable.
-                try:
-                    for row in getattr(t, "rows", []) or []:
-                        cells: List[str] = []
-                        for cell in getattr(row, "cells", []) or []:
-                            if cell is None:
-                                cells.append("")
-                                continue
-                            try:
-                                txt = page.get_textbox(fitz.Rect(cell))
-                            except Exception:
-                                txt = ""
-                            cells.append(re.sub(r"[ \t]+", " ", txt).strip())
-                        rows.append(cells)
-                    if not any(any(c for c in r) for r in rows):
-                        rows = []
-                except Exception:
-                    rows = []
-                if not rows:
-                    try:
-                        rows = t.extract()
-                    except Exception:
-                        continue
-                rows = [[("" if c is None else str(c)).strip() for c in row] for row in rows]
+                # Two candidate readings: the engine's own cells (good when the
+                # table has aligned rows) and a baseline rebuild (good when the
+                # engine's row boxes straddle two text lines and duplicate every
+                # row).  Score both and keep the cleaner one.
+                engine_rows = _engine_rows(page, t)
+                mapped = _table_rows_mapped(page, t, engine_rows) if engine_rows else []
+                base_rows = _table_rows(page, t)
+                # 1) rows that line up one-to-one with text baselines: spaces and
+                #    decimals both survive.  2) the engine's own cells, which the
+                #    normaliser expands when several values are stacked in one
+                #    cell.  3) plain baseline rebuild, only when the engine gave
+                #    nothing usable.
+                if mapped:
+                    rows = mapped
+                elif engine_rows:
+                    rows = engine_rows
+                else:
+                    rows = base_rows
                 rows = [r for r in rows if any(c for c in r)]
                 if len(rows) < 2:
                     continue

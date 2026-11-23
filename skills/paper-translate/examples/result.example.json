@@ -1,35 +1,42 @@
 {
   "case_id": "example-not-a-real-case",
-  "status": "partial",
+  "status": "complete",
   "output_contract": {
-    "document": {
-      "title": "…",
-      "sections": [],
-      "block_count": 0
-    },
-    "evidence": [],
-    "status": "partial"
+    "segments": [
+      {
+        "seg": "s0001",
+        "block": "p01-b005",
+        "page": 1,
+        "section": "Abstract",
+        "source": "The dominant sequence transduction models are based on recurrent networks.",
+        "protected": {
+          "numbers": [],
+          "citations": []
+        },
+        "translation": "主流的序列转换模型基于循环神经网络。"
+      }
+    ],
+    "glossary": [
+      {
+        "term": "attention",
+        "count": 42,
+        "zh": "注意力"
+      }
+    ],
+    "status": "complete"
   },
   "field_status": {
-    "document": {
-      "method": "exact",
-      "confidence": 1.0,
-      "declared_type": "object"
+    "segments": {
+      "method": "example",
+      "confidence": 1.0
     },
-    "evidence": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "unknown"
+    "glossary": {
+      "method": "example",
+      "confidence": 1.0
     },
     "status": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "string",
-      "enum": [
-        "complete",
-        "partial",
-        "unable"
-      ]
+      "method": "example",
+      "confidence": 1.0
     }
   },
   "evidence": [
@@ -41,7 +48,7 @@
   ],
   "uncertainty": {
     "notes": [
-      "这是接口示意，不是任何真实案例的答案"
+      "这是接口示意，字段值不是任何真实案例的答案"
     ],
     "missing": []
   },

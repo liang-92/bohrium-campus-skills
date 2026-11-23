@@ -1,0 +1,4 @@
+{
+  "assertion_count_min": 2,
+  "must_include": "1.8 BLEU"
+}

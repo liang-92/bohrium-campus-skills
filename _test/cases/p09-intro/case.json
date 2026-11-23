@@ -1,0 +1,13 @@
+{
+  "case_id": "self-intro",
+  "topic": "写作08 引言与相关工作写作",
+  "note": "自建引言用例：问题句、分组相关工作、空白句、贡献句，draft 骨架需由 agent 填写后才算完成。",
+  "output_contract": {
+    "problem_statements": "list",
+    "related_work_groups": "list",
+    "gap_statements": "list",
+    "contributions": "list",
+    "draft": "paragraph skeleton",
+    "status": "complete|partial|unable"
+  }
+}

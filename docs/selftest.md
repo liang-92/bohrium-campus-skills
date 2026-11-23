@@ -67,3 +67,45 @@ python3 skills/paper-parse/scripts/run.py --input case-single --out out-degraded
 # 确认 out-degraded/result.json: run.degraded_engine == true 且 status == partial
 python3 -m pip install pymupdf
 ```
+
+---
+
+## 第二轮：带标准答案的合成用例（`_test/cases/`）
+
+上面三个用例用的是真实论文，只能看“合不合理”；第二轮补上**答案已知**的合成用例，
+才能验证“抽得对不对”。
+
+用例由 `_test/cases/make_cases.py` 用 PyMuPDF **现场生成**，所以页面数、作者、表格行列、
+数值、公式编号、引用缺口全部在生成时就确定，写进各用例的 `gold.json`。
+
+```bash
+cd _test/cases
+python make_cases.py          # 生成 16 个用例目录（case.json + task.md + paper.pdf + gold.json）
+python run_cases.py           # 逐用例跑对应 Skill，按 gold 逐项核对
+python run_matrix.py          # 10 包 × 2 篇真实论文 + verify.py 回归
+```
+
+结果（本轮）：
+
+| 项目 | 结果 |
+|---|---|
+| 自建用例 | **16/16 通过，32/32 断言** |
+| 异常用例 | 5/5 均为 `status=unable` 且写出 `result.json`（加密 / 整页图片 / 损坏 / 无 PDF / 零页） |
+| 十包 × 两篇真论文 | 20/20 成功，`verify.py` 全通过（translate 记 `pending`） |
+| 生成物 | `report.md` / `report.json` / `matrix.md` / `matrix.json` |
+
+合成论文里刻意埋的可判分点：
+
+- 作者行下方紧跟机构行（`Institute of Computational Linguistics, Zurich`）——专治“把机构当人名”
+- 表格**只有横线没有竖线**，且数值带小数（`24.1` / `4.92` / `0.512`）——专治“小数被拆/行重复”
+- 公式编号 `(1)` 被放在行首——专治“编号在行首就检不到”
+- 超参齐全但**随机种子故意不报告**——正确行为是进 `missing`，不是补 `42`
+- 正文引 `[5]` 但列表只有 `[1]–[4]`；`[4]` 从未被引用；`[2]` 与 `[4]` DOI 相同
+- 双栏用例把**右栏先写进内容流**——朴素读取会让右栏跑到左栏前面
+
+`--fill` 往返也实测过：
+
+```
+# 译一段 → 只填 2/9 段：status 仍 partial，run.fill = {applied:2, untranslated:7}
+# intro 五段全填：draft.status: to_be_written → written，整体 status: partial → complete
+```

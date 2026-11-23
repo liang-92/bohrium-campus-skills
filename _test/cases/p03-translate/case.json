@@ -1,0 +1,10 @@
+{
+  "case_id": "self-translate",
+  "topic": "阅读03 文献翻译",
+  "note": "自建翻译用例：三段正文 + 参考文献，检验分段上限、批量切分与保护令牌（数字、引用、模型名）。",
+  "output_contract": {
+    "segments": "seg/block/page/section/source/translation",
+    "glossary": "term/zh",
+    "status": "complete|partial|unable"
+  }
+}

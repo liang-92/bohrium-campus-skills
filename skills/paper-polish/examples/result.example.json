@@ -1,35 +1,40 @@
 {
   "case_id": "example-not-a-real-case",
-  "status": "partial",
+  "status": "complete",
   "output_contract": {
-    "document": {
-      "title": "…",
-      "sections": [],
-      "block_count": 0
-    },
-    "evidence": [],
-    "status": "partial"
+    "genre": "journal-article",
+    "sentence_issues": [
+      {
+        "block": "p02-b014",
+        "sentence": "This paper proposes a very novel method.",
+        "flags": [
+          "hedging",
+          "intensifier"
+        ],
+        "words": 8
+      }
+    ],
+    "guardrails": [
+      "do not change numbers, units or citation keys"
+    ],
+    "status": "complete"
   },
   "field_status": {
-    "document": {
-      "method": "exact",
-      "confidence": 1.0,
-      "declared_type": "object"
+    "genre": {
+      "method": "example",
+      "confidence": 1.0
     },
-    "evidence": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "unknown"
+    "sentence_issues": {
+      "method": "example",
+      "confidence": 1.0
+    },
+    "guardrails": {
+      "method": "example",
+      "confidence": 1.0
     },
     "status": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "string",
-      "enum": [
-        "complete",
-        "partial",
-        "unable"
-      ]
+      "method": "example",
+      "confidence": 1.0
     }
   },
   "evidence": [
@@ -41,7 +46,7 @@
   ],
   "uncertainty": {
     "notes": [
-      "这是接口示意，不是任何真实案例的答案"
+      "这是接口示意，字段值不是任何真实案例的答案"
     ],
     "missing": []
   },

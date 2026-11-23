@@ -90,6 +90,10 @@ def _apply_fill(payload: Dict[str, Any], fill: Dict[str, Any]) -> Dict[str, Any]
     """
     applied = 0
     segs = fill.get("segments") or {}
+    # both shapes are documented: {"s0001": "译文"} and [{"seg": "s0001", "translation": "译文"}]
+    if isinstance(segs, list):
+        segs = {str(x.get("seg")): x.get("translation")
+                for x in segs if isinstance(x, dict) and x.get("seg")}
     if segs and isinstance(payload.get("segments"), list):
         for s in payload["segments"]:
             value = segs.get(str(s.get("seg")))
@@ -275,6 +279,17 @@ def main(argv: List[str] | None = None) -> int:
             f"engine degraded: {backend} (pymupdf unavailable) — table, figure and "
             "reference fidelity is reduced; install pymupdf for best quality")
         say(f"engine degraded: {backend} (pymupdf not available); status capped at partial")
+
+    draft = (payload or {}).get("draft") or {}
+    paragraphs = draft.get("paragraphs") or []
+    if paragraphs:
+        if all((p.get("text") or "").strip() for p in paragraphs):
+            draft["status"] = "written"
+            if status == "partial":
+                status = "complete"
+                say("draft filled by the agent: status=complete")
+        else:
+            draft["status"] = "to_be_written"
 
     res, leftover = pk_result.build_result(
         case_id=case_id, doc=doc, case=doc.get("case") or {},

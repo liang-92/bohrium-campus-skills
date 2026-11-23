@@ -84,24 +84,29 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 
 引用管理的核心是“集合运算 + 字段核对”。
 
-1. **条目解析**：编号、作者串、年份、标题（引号内优先）、DOI、原文串。
+1. **条目解析**：编号、作者串、年份、标题（引号内优先）、DOI、原文串；
+   进一步分出 `venue`（期刊/会议/出版社）、`volume`、`issue`、`pages`、`type`（J/C/M/EB-OL）。
+   会议名、卷期页是 GB/T 7714 与 BibTeX 的必填项，缺了就只能输出残缺条目——所以先抽字段再排版。
 2. **正文引用抽取**：`[12]`、`[3–5]` 区间展开、`(Author, 2020)` 作者-年制；记录每处出现的 block。
 3. **一致性**：`citations_without_entry`（引了但列表没有）、`entries_never_cited`（列了但没引）、
    `numbering_gaps`（编号缺号/重号）。
 4. **去重**：DOI 相同 → 同一条；无 DOI 时用标题归一化（去标点、小写、截断）比对，
    只报告“疑似”，不自动合并。
-5. **格式化**：同时输出 GB/T 7714、APA 与 BibTeX 三种写法；BibTeX 的 citation key 由
-   「第一作者姓氏 + 年份 + 标题首个实词」生成，稳定可复现。字段缺失处留空而不是编造。
+5. **格式化**：同时输出 GB/T 7714、APA 与 BibTeX 三种写法。
+   **按类型分支**：期刊 `[J]` 出卷(期): 页；会议 `[C]` 用 `//会议名` 前缀；
+   图书 `[M]`、电子资源 `[EB/OL]` 各自成式；BibTeX 对应 `@article/@inproceedings/@book/@misc`，
+   `booktitle` 与 `journal` 不混用。BibTeX citation key 由「第一作者姓氏 + 年份 + 标题首个实词」生成，稳定可复现。
+   字段缺失处留空而不是编造。
 6. **可疑条目**：无年份、无 venue、标题异常、DOI 形态不合法，单独列出待人工核验。
 
 ## 输出
 
 | 字段 | 内容 |
 |---|---|
-| `entries[]` | n、authors、year、title、doi、page、block |
+| `entries[]` | n、authors、year、title、venue、volume、issue、pages、type、doi、page、block |
 | `in_text_citations` | 编号 → 出现的 block 列表 |
 | `issues` | 缺条目、未被引、重复、编号缺口 |
-| `formatted` | GB/T 7714 与 APA 文本 |
+| `formatted` | `gbt`（GB/T 7714）、`apa`、`bibtex` 三套文本 |
 | `stats` | 条目数、被引编号数 |
 
 每个块同时留三样东西，方便复核而不是只能相信结论：
@@ -219,7 +224,9 @@ python3 scripts/run.py --input /input --out /app/output --profile refs
 
 ```json
 {"issues": {"citations_without_entry": ["27"], "entries_never_cited": ["31"],
-            "duplicates": [{"a": "12", "b": "28", "key": "10.18653/v1/2020.acl-main.1"}]}}
+            "duplicates": [{"a": "12", "b": "28", "key": "10.18653/v1/2020.acl-main.1"}]},
+ "formatted": {"gbt": ["Vaswani A, Shazeer N, Parmar N, et al. Attention is all you need[C]//NeurIPS. 2017: 5998-6008."],
+               "bibtex": ["@inproceedings{vaswani2017attention, booktitle={NeurIPS}, ...}"]}}
 ```
 
 ## 异常处理
@@ -229,6 +236,8 @@ python3 scripts/run.py --input /input --out /app/output --profile refs
 | 参考文献跨页被拆断 | 解析时按“下一个编号”合并续行 |
 | 正文用作者-年制且重名 | 结合年份与标题判定，无法判定则列为待确认 |
 | DOI 缺失 | 不做外部检索，标注 `doi: ""`，不虚构 |
+| 卷期页缺失 | 该段直接省略（不写 `, : .`），并把条目列入可疑清单 |
+| 类型判错（会议写成期刊） | `type` 依据 venue 词形（proceedings/workshop/conference）判定，判不出按 `J` 并标注 |
 
 ## 适用边界
 

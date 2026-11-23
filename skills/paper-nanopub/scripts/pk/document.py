@@ -411,6 +411,10 @@ def to_markdown(doc: Dict[str, Any], max_blocks: int = 400) -> str:
     out.append("")
     for b in d["blocks"][:max_blocks]:
         tag = b["type"]
+        if tag == "table":
+            # already rendered cell-by-cell in the table section below; keeping
+            # the raw cells here duplicates text and breaks reading order
+            continue
         head = f"[{b['id']} p{b['page']}]"
         if tag == "heading":
             out.append(f"\n{'#' * min(4, max(1, b.get('level', 1)))} {b['text'].strip()}  {head}")
@@ -437,6 +441,11 @@ def to_markdown(doc: Dict[str, Any], max_blocks: int = 400) -> str:
                 bb = ",".join(str(round(v)) for v in (t.get("bbox") or []))
                 out.append(f"| {t['id']} | {t['page']} | {t.get('n_rows')}×{t.get('n_cols')} | "
                            f"{bb} | {cap} |")
+            for t in tabs:
+                md = (t.get("markdown") or "").strip()
+                if not md:
+                    continue
+                out.extend(["", f"**{t['id']}** · p{t['page']}", "", "```markdown", md, "```"])
     return "\n".join(out)
 
 

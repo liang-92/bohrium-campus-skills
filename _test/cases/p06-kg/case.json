@@ -1,0 +1,11 @@
+{
+  "case_id": "self-kg",
+  "topic": "阅读15 文献知识图谱构建",
+  "note": "自建知识图谱用例：方法/数据集/指标实体 + uses/trained_on/evaluated_on 关系，含密度门槛。",
+  "output_contract": {
+    "nodes": "id/label/type",
+    "edges": "source/target/relation/evidence",
+    "stats": "counts",
+    "status": "complete|partial|unable"
+  }
+}

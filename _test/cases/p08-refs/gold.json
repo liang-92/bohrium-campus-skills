@@ -1,0 +1,15 @@
+{
+  "citations_without_entry": [
+    "5"
+  ],
+  "entries_never_cited": [
+    "4"
+  ],
+  "duplicate_pair": [
+    "2",
+    "4"
+  ],
+  "entries": 4,
+  "gbt_has_type_marker": true,
+  "bibtex_has_inproceedings": true
+}

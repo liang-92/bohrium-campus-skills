@@ -1,0 +1,12 @@
+{
+  "hyperparameters": {
+    "learning rate": "0.0003",
+    "batch size": "32",
+    "dropout": "0.1"
+  },
+  "datasets": [
+    "WMT 2014"
+  ],
+  "hardware": "V100",
+  "seeds_reported": false
+}

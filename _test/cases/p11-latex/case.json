@@ -1,0 +1,10 @@
+{
+  "case_id": "self-latex",
+  "topic": "写作13 LaTeX 写作与编译",
+  "note": "自建 LaTeX 用例：正文含 & % _ 等需转义字符、booktabs 表格、公式环境与参考文献。",
+  "output_contract": {
+    "files": "written files",
+    "compile": "attempted/engine/ok/errors",
+    "status": "complete|partial|unable"
+  }
+}

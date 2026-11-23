@@ -90,6 +90,9 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 3. **环境**：GPU/TPU 型号、框架与版本、随机种子、重复次数。
 4. **可复现清单**：8 项逐条判定 found/missing（代码版本、环境、超参、数据版本、种子、硬件、指标、重复）。
 5. **缺口显式化**：missing 项写进 `uncertainty.missing`，并给出“需要作者确认”的具体问题。
+6. **成文骨架**：`draft` 摆好 4 个空段落（data / model / training / evaluation），
+   规则里写死“只准报 `parameters`/`datasets` 里出现过的数字”，从机制上堵住补默认值的路。
+   Agent 写进 `fill.json` 的 `replace.draft` 后重跑 `--fill`，四段全非空才抬到 `complete`。
 
 ## 输出
 
@@ -101,6 +104,8 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 | `reproducibility_checklist[]` | 8 项 found/missing |
 | `missing[]` | 原文未报告项 |
 | `limitations[]` | 限制条件句 |
+| `draft` | `status` + 4 段骨架 + `rules`（禁造数值） |
+| `run.fill` | `--fill` 后回填的段落数 |
 
 每个块同时留三样东西，方便复核而不是只能相信结论：
 
@@ -211,6 +216,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 
 ```bash
 python3 scripts/run.py --input /input --out /app/output --profile methods
+# Agent 写 4 段后：python3 scripts/run.py --input /input --out /app/output --profile methods --fill
 ```
 
 示意输出（**示例，非正式案例结果**）：
@@ -218,7 +224,8 @@ python3 scripts/run.py --input /input --out /app/output --profile methods
 ```json
 {"parameters": [{"name": "layers", "value": "6", "context": "a stack of N = 6 identical layers",
   "block": "p03-b005", "page": 3}],
- "reproducibility_checklist": [{"item": "random seeds", "found": false}]}
+ "reproducibility_checklist": [{"item": "random seeds", "found": false}],
+ "draft": {"status": "to_be_written", "paragraphs": [{"role": "data", "text": ""}]}}
 ```
 
 ## 异常处理
@@ -228,6 +235,7 @@ python3 scripts/run.py --input /input --out /app/output --profile methods
 | 参数只在图/表中 | 从表格行取，标注来源为表格而非正文 |
 | 正文与配置冲突 | 两条都记录并标 `conflict`，不擅自取舍 |
 | 值缺失 | 留空 + 进 missing，禁止用“常见默认值”填充 |
+| `draft` 段落仍为空 | 保持 `to_be_written`，不把骨架当成写完的章节 |
 
 ## 适用边界
 

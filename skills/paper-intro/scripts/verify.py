@@ -36,7 +36,12 @@ def check_translate(result: Dict[str, Any], doc: Dict[str, Any],
     # Slices the contract never asked for live in payload.json; look in both so
     # a declared contract does not hide the segments from the checker.
     payload = payload or {}
-    segs = result.get("segments") or payload.get("segments") or []
+    body = result.get("output_contract") or {}
+    segs = (result.get("segments") or body.get("segments")
+            or payload.get("segments") or [])
+    if isinstance(segs, dict):
+        # the contract wraps declared arrays as {"items": [...], "count": n}
+        segs = segs.get("items") or []
     if not segs:
         return ["no segments in result.json"]
     filled = 0

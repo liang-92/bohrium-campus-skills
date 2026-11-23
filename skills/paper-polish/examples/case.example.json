@@ -3,8 +3,9 @@
   "note": "最小输入示例；正式案例由平台提供，此处仅说明接口，不代表真实评测数据。",
   "topic": "写作02 学术语言润色",
   "output_contract": {
-    "document": "parsed structure",
-    "evidence": "list of block-level anchors",
+    "genre": "example value, see result.example.json",
+    "sentence_issues": "list of sentence_issue",
+    "guardrails": "list of guardrail",
     "status": "complete|partial|unable"
   }
 }

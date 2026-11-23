@@ -1,0 +1,15 @@
+{
+  "case_id": "self-parse-twocol",
+  "topic": "阅读01 文献文档解析",
+  "note": "自建双栏用例：右栏在 PDF 内容流中先写入，用于检验 XY-cut 阅读顺序是否真的按栏排序。",
+  "output_contract": {
+    "document": "title/authors/abstract/pages/engine",
+    "structure": "section tree",
+    "content.blocks": "list with page + block id",
+    "content.tables": "caption/header/rows",
+    "content.formulas": "number/text/block",
+    "content.references": "n/text/page",
+    "coverage": "per-page chars, empty pages, issues",
+    "status": "complete|partial|unable"
+  }
+}

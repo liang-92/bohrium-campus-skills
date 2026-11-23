@@ -1,0 +1,15 @@
+{
+  "case_id": "self-ex-imageonly",
+  "topic": "阅读01 文献文档解析",
+  "note": "自建异常用例：整页图片化（无文本层），检验 OCR 路径与 ocr_pages 标注。",
+  "output_contract": {
+    "document": "title/authors/abstract/pages/engine",
+    "structure": "section tree",
+    "content.blocks": "list with page + block id",
+    "content.tables": "caption/header/rows",
+    "content.formulas": "number/text/block",
+    "content.references": "n/text/page",
+    "coverage": "per-page chars, empty pages, issues",
+    "status": "complete|partial|unable"
+  }
+}

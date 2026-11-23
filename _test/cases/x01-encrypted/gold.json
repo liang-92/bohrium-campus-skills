@@ -1,0 +1,7 @@
+{
+  "expect_status": [
+    "unable",
+    "partial"
+  ],
+  "must_not_have_text": true
+}

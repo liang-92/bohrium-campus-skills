@@ -1,35 +1,40 @@
 {
   "case_id": "example-not-a-real-case",
-  "status": "partial",
+  "status": "complete",
   "output_contract": {
-    "document": {
-      "title": "…",
-      "sections": [],
-      "block_count": 0
+    "entries": [
+      {
+        "n": 1,
+        "authors": "Jimmy Lei Ba, Jamie Ryan Kiros, Geoffrey E Hinton",
+        "title": "Layer normalization",
+        "year": "2016",
+        "venue": "arXiv",
+        "type": "EB/OL",
+        "doi": ""
+      }
+    ],
+    "issues": {
+      "citations_without_entry": [],
+      "entries_never_cited": [
+        "40"
+      ],
+      "duplicates": [],
+      "numbering_gaps": []
     },
-    "evidence": [],
-    "status": "partial"
+    "status": "complete"
   },
   "field_status": {
-    "document": {
-      "method": "exact",
-      "confidence": 1.0,
-      "declared_type": "object"
+    "entries": {
+      "method": "example",
+      "confidence": 1.0
     },
-    "evidence": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "unknown"
+    "issues": {
+      "method": "example",
+      "confidence": 1.0
     },
     "status": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "string",
-      "enum": [
-        "complete",
-        "partial",
-        "unable"
-      ]
+      "method": "example",
+      "confidence": 1.0
     }
   },
   "evidence": [
@@ -41,7 +46,7 @@
   ],
   "uncertainty": {
     "notes": [
-      "这是接口示意，不是任何真实案例的答案"
+      "这是接口示意，字段值不是任何真实案例的答案"
     ],
     "missing": []
   },

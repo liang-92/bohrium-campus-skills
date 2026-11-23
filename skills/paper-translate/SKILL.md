@@ -82,26 +82,36 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 
 ## 处理流程
 
-**术语先锁定，再逐段翻译，最后机器核验。**
+**术语先锁定，再按批翻译，最后机器核验。**
 
-1. **切段**：按块（而非按页）切分，块内再按句边界合并到 ≤850 字符，得到 `s0001…` 段号；
-   每段保留 `block`、`page`、`section`，因此译文永远能回到原文位置。
-2. **术语表**：从全文抽高频术语/缩写（`X (ABC)` 形式优先），与内置学术词表合并；
+1. **切段**：按块（而非按页）切分，同页同节内相邻块合并到 ≤700 字符，得到 `s0001…` 段号；
+   每段保留 `block`、`page`、`section`、`type`，因此译文永远能回到原文位置。
+   参考文献、附录、致谢整节跳过；表格单元格内的文字不切段（表格另由 parse 通道处理），
+   避免把“表 3 的 0.1/4.92/25.8”当成正文句子去译。
+2. **控量**：总段数封顶 120 段，超出时按“摘要 > 引言/结论 > 方法 > 讨论”的优先级保留、
+   其余计入 `deferred_segments` 并在 `notes` 里报数量——宁可明确少译，也不为了凑满而把
+   一次 64 请求的预算花在参考文献上。
+3. **分批**：`batches` 把段号切成每批 ≤20 段（对应 `rules.batch_size = 20`），
+   一次模型请求译一批，避免单次输出被 16384 token 截断而中途丢失后半段。
+4. **术语表**：从全文抽高频术语/缩写（`X (ABC)` 形式优先），与内置学术词表合并；
    同一术语只允许一个译名，冲突由 `verify.py` 报错。
-3. **保护令牌**：每段提前抽出数字、单位、引用标记 `[12]`、图表编号、公式片段、模型/数据集专名，
+5. **保护令牌**：每段提前抽出数字、单位、引用标记 `[12]`、图表编号、公式片段、模型/数据集专名，
    译文中必须原样出现——这一步把“翻译时把 28.4 BLEU 写成 28.4 分”这类错误变成机器可查的问题。
-4. **逐段翻译**：Agent 按段填 `translation`，只译该段，不合并、不省略、不添加解释。
-5. **核验**：`verify.py` 检查空译、数字/单位/引用丢失、译文长度异常、术语一名多译。
+6. **回灌**：Agent 把译文写进 `fill.json` 的 `segments`（`{seg, translation}` 列表），
+   重跑 `run.py --fill` 合并；“译了哪些、还剩哪些”由脚本统计，不靠人记。
 
 ## 输出
 
-`result.json` 主要字段：
+`result.json` / `payload.json` 主要字段：
 
 | 字段 | 内容 |
 |---|---|
-| `segments[]` | `seg`、`block`、`page`、`section`、`source`、`protected`、`translation` |
+| `segments[]` | `seg`、`block`、`page`、`section`、`type`、`source`、`protected`、`translation` |
+| `batches` | 段号分批，每批 ≤20 段 |
+| `deferred_segments` | 因 120 段上限被推迟的段数（0 表示全译） |
 | `glossary[]` | 术语、出现次数、建议译名 `zh` |
-| `rules` | 术语策略、必须原样保留的令牌、语域要求 |
+| `rules` | 术语策略、必须原样保留的令牌、语域、`batch_size`、`how_to_fill` |
+| `run.fill` | `--fill` 后回填的段数与仍未译的段数 |
 
 `translation` 初始为空是**设计如此**：这一栏必须由模型逐段填写，脚本不生成译文。
 
@@ -213,9 +223,10 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 ## 最小调用示例
 
 ```bash
-python3 scripts/run.py --input /input --out /app/output      # 生成分段与术语表
-# Agent 逐段填写 result.json 的 segments[].translation
-python3 scripts/verify.py --out /app/output --kind translate  # 译后核验
+python3 scripts/run.py --input /input --out /app/output        # 生成分段、术语表、分批
+# Agent 每批 ≤20 段翻译，写 fill.json：{"segments": [{"seg": "s0001", "translation": "..."}]}
+python3 scripts/run.py --input /input --out /app/output --fill  # 回灌并统计
+python3 scripts/verify.py --out /app/output --kind translate    # 译后核验
 ```
 
 示意输出（**示例，非正式案例结果**）：
@@ -224,17 +235,21 @@ python3 scripts/verify.py --out /app/output --kind translate  # 译后核验
 {"segments": [{"seg": "s0001", "block": "p01-b005", "section": "Abstract",
   "source": "The dominant sequence transduction models are based on complex recurrent networks.",
   "protected": {"numbers": [], "citations": []},
-  "translation": "主流的序列转换模型基于复杂的循环神经网络。"}]}
+  "translation": "主流的序列转换模型基于复杂的循环神经网络。"}],
+ "batches": [["s0001", "s0002"]], "deferred_segments": 0,
+ "run": {"fill": {"applied": 1, "missing": 0}}}
 ```
 
 ## 异常处理
 
 | 情况 | 处置 |
 |---|---|
-| 段落过长导致截断 | 按句边界再切，禁止从句子中间截断 |
+| 段落超过 700 字符 | 先按块边界切，再退化为定长切；不从句中截断句子语义 |
+| 总段数超过 120 | 按章节优先级截断，`deferred_segments` 如实报数，不假装全译 |
 | 术语表冲突 | 以首次出现并在标题/摘要中使用的译名为准，其余全部改齐 |
 | 公式/符号无法翻译 | 原样保留，前后文用中文衔接，不改写公式 |
 | 原文本身残缺（PDF 丢字） | 译文中用 `[原文缺失]` 标注，不猜测 |
+| 扫描件/乱码页无正文 | 该页不进分段，`notes` 说明跳过原因，不编造译文 |
 
 ## 适用边界
 

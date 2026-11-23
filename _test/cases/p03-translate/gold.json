@@ -1,0 +1,14 @@
+{
+  "max_segments": 120,
+  "batch_size": 20,
+  "skip_sections": [
+    "References"
+  ],
+  "protected_examples": [
+    "1.8",
+    "10%",
+    "1.2x",
+    "[1]",
+    "fairseq"
+  ]
+}

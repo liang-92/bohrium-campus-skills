@@ -84,24 +84,29 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 
 只建有证据的边，宁可少建，不可猜建。
 
-1. **实体**：方法（transformer/bert/attention…）、数据集（`X dataset/corpus`）、指标（BLEU/F1/AUC…）、
-   任务（translation/classification…）、章节标题作为 concept 节点。
-2. **关系**：`uses`、`evaluated_on`、`outperforms`、`improves` 四类句式模板匹配；
-   每条边必须带 `evidence.block` 与匹配到的原句片段。
+1. **种子节点**：方法（transformer/bert/attention…）、数据集（`X dataset/corpus`）、指标（BLEU/F1/AUC…）、
+   任务（translation/classification…）；`Introduction/Conclusion/References` 这类**无信息标题不进图**
+   （它们不是概念，进了只会拉低图的可读性）。
+2. **关系（两遍）**：
+   - 句式模板：`uses`、`trained on`、`evaluated on`、`outperforms`、`improves`、`proposes` 六类线索动词；
+   - 共现兜底：同一句里两个已识别实体共现时建 `related_to`，关系弱，但方向与来源都写清楚。
+   每条边必须带 `evidence.block` 与匹配到的原句片段（≤300 字符），没有证据句就不建边。
 3. **别名归一**：小写、去连字符、去复数后聚类；同一 canonical 下多个节点进 `alias_groups`，
    保留原始写法，不做不可逆合并。
-4. **查询**：按关系类型各给一组示例查询及答案子图，并显式列出“无法确定的关系”。
-5. **导出**：JSON（nodes/edges）+ Cypher `MERGE` 语句，便于导入 Neo4j。
+4. **密度门槛**：节点 ≥8 且边 ≥ `max(10, 节点数×0.4)` 才算建成；达不到就降为 `partial`
+   并在 `notes` 说明“图太稀疏，关系句不足”——不拿 3 条边冒充知识图谱。
+5. **查询**：按关系类型各给一组示例查询及答案子图，并显式列出“无法确定的关系”。
+6. **导出**：JSON（nodes/edges）+ Cypher `MERGE` 语句，便于导入 Neo4j。
 
 ## 输出
 
 | 字段 | 内容 |
 |---|---|
 | `nodes[]` | id、label、type、evidence（block/page/section）|
-| `edges[]` | source、target、relation、evidence（含原句）|
+| `edges[]` | source、target、relation、evidence（含原句 quote）|
 | `alias_groups[]` | 归一后的同义节点 |
 | `queries[]` | 查询语句 + 结果子图 |
-| `stats` | 节点数、边数 |
+| `stats` | `nodes`、`edges` 计数；`complete` 需满足密度门槛 |
 
 每个块同时留三样东西，方便复核而不是只能相信结论：
 
@@ -219,14 +224,16 @@ python3 scripts/run.py --input /input --out /app/output --profile kg
 ```json
 {"nodes": [{"id": "n001", "label": "Transformer", "type": "method"}],
  "edges": [{"source": "n001", "target": "n004", "relation": "evaluated_on",
-            "evidence": {"block": "p08-b012", "page": 8, "quote": "We evaluate on WMT 2014 English-to-German."}}]}
+            "evidence": {"block": "p08-b012", "page": 8, "quote": "We evaluate on WMT 2014 English-to-German."}}],
+ "stats": {"nodes": 34, "edges": 27}}
 ```
 
 ## 异常处理
 
 | 情况 | 处置 |
 |---|---|
-| 共现但无关系句 | 不建边，记入“未确定关系” |
+| 共现但无关系句 | 只建 `related_to`（弱关系）并保留原句，不硬套 `outperforms` |
+| 图太稀疏（边 < 门槛） | 状态降 `partial`，`notes` 说明关系句不足，不硬凑边 |
 | 同名不同物 | 保留为两个节点，`alias_groups` 不合并，注明冲突 |
 | 代词指代不清 | 丢弃该边，避免把 it/this 错误连到实体 |
 

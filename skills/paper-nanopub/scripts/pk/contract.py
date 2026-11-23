@@ -214,6 +214,20 @@ ALIASES: Dict[str, str] = {
     "verbatim": "verbatim", "raw_text": "verbatim", "text_layer": "verbatim",
 }
 
+# A task declares the field in its own words; the composer names its output after
+# what it produced.  This map joins the two without renaming either side.
+PAYLOAD_SYNONYMS: Dict[str, str] = {
+    "note": "paper_card", "card": "paper_card", "reading_note": "paper_card",
+    "paper_note": "paper_card", "summary_card": "paper_card",
+    "section_notes": "section_notes", "sections_note": "section_notes",
+    "diagnostics": "sentence_issues", "sentence_issues": "sentence_issues",
+    "issues": "sentence_issues", "problems": "sentence_issues",
+    "rewrites": "rewrites", "edits": "rewrites", "revisions": "rewrites",
+    "assertions": "assertion", "nanopub": "assertion",
+    "parameters": "parameters", "hyperparameters": "parameters",
+    "checklist": "reproducibility_checklist",
+}
+
 # Second chance: read the declared *description* (not the name) for a noun.
 # Deliberately short — only nouns that name a slice we actually produce.
 DESC_HINTS: List[Tuple[str, Tuple[str, ...]]] = [
@@ -386,10 +400,30 @@ def _is_empty(value: Any, depth: int = 0) -> bool:
 def resolve(f: Field, bag: Dict[str, Any], payload: Dict[str, Any]) -> Resolution:
     key = _norm(f.name)
 
+    # (a0) the declared key is a path into the composer's payload ("content.tables")
+    if "." in f.name:
+        cur: Any = payload
+        for part in f.name.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                cur = None
+                break
+        if cur not in (None, "", [], {}):
+            v, ok = _coerce(cur, f.kind)
+            return Resolution(v, "path", 1.0, ok)
+
     # (a) the composer named this field itself
     if payload and payload.get(f.name) not in (None, "", [], {}):
         v, ok = _coerce(payload[f.name], f.kind)
         return Resolution(v, "exact", 1.0, ok)
+
+    # (a1) the composer named it something else: a task's own word for its output
+    # ("note" for the reading card, "diagnostics" for the sentence issues)
+    alias_key = PAYLOAD_SYNONYMS.get(key)
+    if alias_key and payload.get(alias_key) not in (None, "", [], {}):
+        v, ok = _coerce(payload[alias_key], f.kind)
+        return Resolution(v, f"synonym:{alias_key}", 0.95, ok)
 
     # (b) one of our standard slices carries exactly this name
     if key in bag and bag[key] is not None:

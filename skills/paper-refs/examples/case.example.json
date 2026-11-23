@@ -3,8 +3,8 @@
   "note": "最小输入示例；正式案例由平台提供，此处仅说明接口，不代表真实评测数据。",
   "topic": "写作04 参考文献与引用管理",
   "output_contract": {
-    "document": "parsed structure",
-    "evidence": "list of block-level anchors",
+    "entries": "list of entrie",
+    "issues": "example value, see result.example.json",
     "status": "complete|partial|unable"
   }
 }

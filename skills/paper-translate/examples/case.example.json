@@ -3,8 +3,8 @@
   "note": "最小输入示例；正式案例由平台提供，此处仅说明接口，不代表真实评测数据。",
   "topic": "阅读03 文献翻译",
   "output_contract": {
-    "document": "parsed structure",
-    "evidence": "list of block-level anchors",
+    "segments": "list of segment",
+    "glossary": "list of glossary",
     "status": "complete|partial|unable"
   }
 }

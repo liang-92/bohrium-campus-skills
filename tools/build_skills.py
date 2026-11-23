@@ -266,35 +266,78 @@ def render_md(skill: dict) -> str:
     )
 
 
+EXAMPLE_PAYLOAD = {
+    "parse": {"document": {"title": "Attention Is All You Need", "pages": 15, "engine": "pymupdf"},
+              "structure": [{"level": 1, "title": "3 Model Architecture", "page": 2, "block": "p02-b008"}],
+              "content": {"blocks": [{"id": "p03-b005", "page": 3, "column": 0,
+                                      "section": "3.1 Encoder and Decoder Stacks",
+                                      "text": "The encoder is composed of a stack of N = 6 identical layers."}]}},
+    "translate": {"segments": [{"seg": "s0001", "block": "p01-b005", "page": 1, "section": "Abstract",
+                                "source": "The dominant sequence transduction models are based on recurrent networks.",
+                                "protected": {"numbers": [], "citations": []},
+                                "translation": "主流的序列转换模型基于循环神经网络。"}],
+                  "glossary": [{"term": "attention", "count": 42, "zh": "注意力"}]},
+    "notes": {"paper_card": {"title": "Attention Is All You Need",
+                             "research_question": [{"text": "Can attention alone replace recurrence?",
+                                                    "block": "p01-b013", "page": 1}],
+                             "findings": [{"text": "28.4 BLEU on WMT 2014 En-De", "block": "p01-b013"}]},
+              "section_notes": [{"section": "3 Model Architecture", "page": 2, "block": "p02-b008"}]},
+    "nanopub": {"assertions": [{"id": "a1", "claim": "self-attention replaces recurrence",
+                                "type": "method", "quote": "dispensing with recurrence and convolutions entirely",
+                                "block": "p01-b013", "page": 1}],
+                "provenance": {"pdf": "1706.03762v7.pdf", "block": "p01-b013"}},
+    "kg": {"nodes": [{"id": "n001", "label": "Transformer", "type": "method",
+                      "evidence": [{"block": "p01-b013", "page": 1}]}],
+           "edges": [{"source": "n001", "target": "n002", "relation": "uses",
+                      "evidence": {"block": "p05-b013", "quote": "The Transformer uses multi-head attention"}}]},
+    "polish": {"genre": "journal-article",
+               "sentence_issues": [{"block": "p02-b014", "sentence": "This paper proposes a very novel method.",
+                                    "flags": ["hedging", "intensifier"], "words": 8}],
+               "guardrails": ["do not change numbers, units or citation keys"]},
+    "refs": {"entries": [{"n": 1, "authors": "Jimmy Lei Ba, Jamie Ryan Kiros, Geoffrey E Hinton",
+                          "title": "Layer normalization", "year": "2016", "venue": "arXiv",
+                          "type": "EB/OL", "doi": ""}],
+             "issues": {"citations_without_entry": [], "entries_never_cited": ["40"],
+                        "duplicates": [], "numbering_gaps": []}},
+    "intro": {"problem_statements": [{"text": "Recurrent models preclude parallelization within a sequence.",
+                                      "block": "p01-b013", "page": 1}],
+              "gap_statements": [{"text": "Attention had not been used without recurrence.",
+                                  "block": "p01-b014", "page": 1}],
+              "draft": {"status": "written",
+                        "paragraphs": [{"role": "context", "text": "（示例段落）", "citations": ["1"]}]}},
+    "methods": {"parameters": [{"name": "N", "value": "6", "block": "p02-b020", "page": 2}],
+                "datasets": [{"name": "WMT 2014 English-German", "block": "p07-b006", "page": 7}],
+                "reproducibility_checklist": [{"item": "random seeds", "found": False}]},
+    "latex": {"files": ["main.tex", "latex/main.tex"],
+              "compile": {"attempted": True, "engine": "pdflatex", "ok": True, "pdf": True,
+                          "passes": 2, "errors": []},
+              "tex": "\\documentclass{article}\\begin{document}...\\end{document}"},
+}
+
+
 def write_examples(dest: str, skill: dict, root: str) -> None:
     os.makedirs(dest, exist_ok=True)
+    example = EXAMPLE_PAYLOAD.get(skill["mode"], {})
+    contract = {k: ("example value, see result.example.json" if not isinstance(v, list) else
+                    f"list of {k.rstrip('s')}") for k, v in example.items()}
+    contract["status"] = "complete|partial|unable"
     case = {
         "case_id": "example-not-a-real-case",
         "note": "最小输入示例；正式案例由平台提供，此处仅说明接口，不代表真实评测数据。",
         "topic": skill["challenge"],
-        "output_contract": {
-            "document": "parsed structure",
-            "evidence": "list of block-level anchors",
-            "status": "complete|partial|unable",
-        },
+        "output_contract": contract,
     }
     with open(os.path.join(dest, "case.example.json"), "w", encoding="utf-8", newline="\n") as fh:
         json.dump(case, fh, ensure_ascii=False, indent=2)
     result = {
         "case_id": "example-not-a-real-case",
-        "status": "partial",
+        "status": "complete",
         # keys are copied verbatim from the case's output_contract
-        "output_contract": {"document": {"title": "…", "sections": [], "block_count": 0},
-                            "evidence": [], "status": "partial"},
-        # one line per declared field: which rule filled it, how sure, what type
-        "field_status": {
-            "document": {"method": "exact", "confidence": 1.0, "declared_type": "object"},
-            "evidence": {"method": "slice", "confidence": 0.95, "declared_type": "unknown"},
-            "status": {"method": "slice", "confidence": 0.95, "declared_type": "string",
-                       "enum": ["complete", "partial", "unable"]},
-        },
+        "output_contract": dict(example, status="complete"),
+        "field_status": {k: {"method": "example", "confidence": 1.0}
+                         for k in list(example) + ["status"]},
         "evidence": [{"block": "p01-b001", "page": 1, "quote": "（示例引用，非正式案例结果）"}],
-        "uncertainty": {"notes": ["这是接口示意，不是任何真实案例的答案"], "missing": []},
+        "uncertainty": {"notes": ["这是接口示意，字段值不是任何真实案例的答案"], "missing": []},
         "provenance": {"pdf": "example.pdf", "pages": 0, "engine": "paperkit 1.0.0"},
     }
     with open(os.path.join(dest, "result.example.json"), "w", encoding="utf-8", newline="\n") as fh:

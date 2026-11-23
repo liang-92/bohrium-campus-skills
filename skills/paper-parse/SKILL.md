@@ -95,9 +95,19 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
    中位行距 2 倍时断段；行末连字符且下一行小写时合并（`advanta-` + `geous` → `advantageous`）。
 5. **结构标注**：编号深度（`3.2.1`）/字号比/常见标题名判定层级；`3.1` 与 `Encoder and Decoder Stacks`
    这类被拆开的标题会重新拼接。
-6. **表格与公式**：优先引擎表格识别（`find_tables` / `extract_tables`），失败时用“行内多列宽间隙”
-   兜底；公式按数学符号密度 + 编号 `(12)` 识别，同一公式的碎片行合并。
-7. **证据粒度**：每个块得到 `p03-b012` 这样的稳定 id，页码、栏号、bbox、章节路径一并保留。
+6. **作者抽取**：先定位“标题块之后、Abstract 之前”的作者区，再在区内收 2–4 个大写词组成的连续人名，
+   剔除邮箱、`∗` 等标记以及机构词/城市名（Toronto、Tilburg…）；不足 2 人时置 `authors_uncertain`
+   ——比“按逗号硬切”可靠得多，也不会把 `Toronto Łukasz Kaiser` 这种跨栏残留当成人名。
+7. **表格**：**先试无边框策略** `find_tables(strategy="text")`（学术论文的表多数只有横线，
+   默认的 `lines` 策略会把 8×13 的表压成 8×3），失败再退回默认策略。
+   行内容不直接取引擎的单元格矩形——那些矩形落在**文字基线**上，会把相邻行整行带进来
+   （5 行的表变成 10 行、`24.1` 被拆成 `241` 和 `.`）。改为**按文字基线聚类成行、按水平重叠归列**，
+   引擎只提供列边界；行数与基线数一致时直接一一映射，二者不一致才退回引擎单元格 +
+   多行行展开。`0.1 | 0.1 | 100K | 4.92 | 25.8 | 65` 这类基线上的 6 个数因此能原样恢复。
+8. **公式**：按数学符号密度 + 编号 `(12)` 识别，同一公式的碎片行合并；同时给出 `tex` 字段
+   （√→`\sqrt{}`、希腊字母/上下标映射、`&%$#_{}` 转义），丢字符数记进 `tex_dropped_chars`，
+   含非 ASCII 无法映射时 `tex_confidence: low`——让下游能判断“这条公式能不能直接用”。
+9. **证据粒度**：每个块得到 `p03-b012` 这样的稳定 id，页码、栏号、bbox、章节路径一并保留。
 
 ## 输出
 
@@ -105,11 +115,11 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 
 | 字段 | 内容 |
 |---|---|
-| `document` | 标题、作者、摘要、关键词、DOI、页数、引擎、PDF sha256 |
+| `document` | 标题、作者（含 `authors_uncertain`）、摘要、关键词、DOI、页数、引擎、PDF sha256 |
 | `structure` | 章节树（level/title/page/block） |
-| `content.blocks` | 全量块：id、page、column、section、type、text |
-| `content.tables` | 表格：caption、header、rows、markdown、行列数、来源 |
-| `content.formulas` | 公式：编号、文本、所在块 |
+| `content.blocks` | 全量块：id、page、column、section、type、text（表格单元格不再混进正文流） |
+| `content.tables` | 表格：caption、header、rows、markdown、行列数、`n_rows`/`n_cols`、来源策略 |
+| `content.formulas` | 公式：编号、文本、所在块、`tex`、`tex_confidence`、`tex_dropped_chars` |
 | `content.figures` | 图：页码、bbox、caption |
 | `content.references` | 参考文献条目：编号、文本、页码、块 |
 | `coverage` | 每页字符数、空页、栏数、问题清单 |
@@ -245,6 +255,8 @@ python3 scripts/verify.py --out /app/output --kind generic
 | 加密/损坏 PDF、目录里没有 PDF | 捕获异常，`status: unable` + `input.problem`，写明原因，不伪造文本，仍写出 `result.json` |
 | 有 PDF 但零提取（无文本层且无 OCR） | `status: unable`，不是 `partial`——零提取不宣称「读到了一半」；先跑 `--probe` 看缺哪个引擎 |
 | 表格识别为空 | 用行间隙兜底；仍为空则在 `coverage.issues` 说明“该页无表格或引擎不支持” |
+| 表格只有横线（无竖线） | 先走 `strategy="text"` 重建列；列仍错位则保留原行文本并标 `table_uncertain`，不输出假的“整齐表格” |
+| 作者区被双栏切断 | 用作者区 + 机构词/城市停用词过滤；仍不足 2 人则 `authors_uncertain: true`，不猜 |
 | 字体乱码 | 保留原字符并标记，不做“猜测式修正” |
 
 ## 适用边界

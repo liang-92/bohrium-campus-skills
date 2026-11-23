@@ -1,0 +1,10 @@
+{
+  "case_id": "self-nanopub",
+  "topic": "阅读14 语义标注与纳米出版",
+  "note": "自建纳米出版用例：断言 + 前提 + 方法与材料 + 支持证据。",
+  "output_contract": {
+    "assertion": "claim",
+    "provenance": "block anchors",
+    "status": "complete|partial|unable"
+  }
+}

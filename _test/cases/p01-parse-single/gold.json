@@ -1,0 +1,65 @@
+{
+  "pages": 3,
+  "title_words": [
+    "Sparse",
+    "Routing"
+  ],
+  "authors": [
+    "Mira Kovacs",
+    "Daniel Osei",
+    "Petra Lindqvist",
+    "Ravi Menon"
+  ],
+  "sections": [
+    "1 Introduction",
+    "2 Related Work",
+    "3 Method",
+    "4 Experiments",
+    "5 Conclusion"
+  ],
+  "tables": [
+    {
+      "n_rows": 5,
+      "n_cols": 6,
+      "must_contain": [
+        "26.2",
+        "0.583",
+        "118M"
+      ]
+    }
+  ],
+  "formulas": {
+    "at_least": 1,
+    "number": "(1)"
+  },
+  "hyperparameters": {
+    "learning rate": "0.0003",
+    "batch size": "32",
+    "dropout": "0.1",
+    "attention heads": "8",
+    "layers": "6"
+  },
+  "datasets": [
+    "WMT 2014"
+  ],
+  "hardware": "V100",
+  "seeds_reported": false,
+  "refs": {
+    "entries": 4,
+    "citations_without_entry": [
+      "5"
+    ],
+    "entries_never_cited": [
+      "4"
+    ],
+    "duplicate_pair": [
+      "2",
+      "4"
+    ]
+  },
+  "kg_must_have": [
+    "fairseq",
+    "WMT 2014",
+    "BLEU"
+  ]
+}

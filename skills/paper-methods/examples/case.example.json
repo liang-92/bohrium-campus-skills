@@ -3,8 +3,9 @@
   "note": "最小输入示例；正式案例由平台提供，此处仅说明接口，不代表真实评测数据。",
   "topic": "写作09 方法与实验章节写作",
   "output_contract": {
-    "document": "parsed structure",
-    "evidence": "list of block-level anchors",
+    "parameters": "list of parameter",
+    "datasets": "list of dataset",
+    "reproducibility_checklist": "list of reproducibility_checklist",
     "status": "complete|partial|unable"
   }
 }

@@ -1,0 +1,10 @@
+{
+  "case_id": "self-polish",
+  "topic": "写作02 学术语言润色",
+  "note": "自建润色用例：长句、被动堆叠、断言强度与术语漂移，改写需保留数字与引用。",
+  "output_contract": {
+    "diagnostics": "per-sentence issues",
+    "rewrites": "before/after",
+    "status": "complete|partial|unable"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "case_id": "self-notes",
+  "topic": "阅读10 文献总结与结构化笔记",
+  "note": "自建笔记用例：研究问题、数据、方法、结论、局限均可从原文定位。",
+  "output_contract": {
+    "note": "question/data/methods/findings/limitations/sections",
+    "evidence": "anchors",
+    "status": "complete|partial|unable"
+  }
+}

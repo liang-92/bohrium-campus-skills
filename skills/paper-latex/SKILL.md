@@ -89,16 +89,21 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 3. **表格**：解析出的表格转 `booktabs`（`\toprule/\midrule/\bottomrule`），列数超 6 时截断并注明。
 4. **公式**：公式块进 `equation` 环境，保留原编号文本。
 5. **参考文献**：`thebibliography` + `\bibitem`，编号与正文 `[n]` 对齐。
-6. **真编译**：检测 `pdflatex/latexmk/xelatex`，编译两次，抓 `!` 开头的错误行；
-   引擎缺失时明确写 `compile.attempted: false`，不谎报成功。
+6. **真编译**：检测 `pdflatex/latexmk/xelatex`，编译**两遍**（第二遍让 `ef`/目录稳定），
+   抓 `!` 开头的错误行；引擎缺失时明确写 `compile.attempted: false`，不谎报成功。
+7. **先静态自检**：没有引擎也要能查错——`compile.static_check` 做环境配对（`\begin/\end` 是否成对）
+   与花括号配平，把“根本编译不过”的源码在提交前就拦下来，而不是等评委编译失败。
+8. **公式可核**：`formula_to_tex` 把 √、希腊字母、上下标映射成 LaTeX 命令并转义 `&%$#_{}`；
+   含非 ASCII 字符被丢掉的公式记进 `formula_review`，明确标“需人工复核”，不假装全都转对了。
 
 ## 输出
 
 | 字段 | 内容 |
 |---|---|
-| `files` | 生成的文件清单（`main.tex`、`latex/main.tex`）|
+| `files` | 实际写出的文件清单（`main.tex`、`latex/main.tex`）|
 | `tex` | 源码（截断展示）|
-| `compile` | 是否尝试、引擎、是否成功、错误行、是否产出 PDF |
+| `compile` | `attempted`、`engine`、`ok`、`errors[]`、`pdf`、`passes: 2`、`static_check` |
+| `formula_review[]` | 低置信度公式（block、page、编号），需人工确认 |
 | `structure` | 章节映射结果 |
 | `environment` | 引擎与宏包依赖 |
 
@@ -218,15 +223,21 @@ python3 scripts/verify.py --out /app/output --kind generic
 示意输出（**示例，非正式案例结果**）：
 
 ```json
-{"compile": {"attempted": true, "engine": "pdflatex", "ok": true, "pdf": true, "errors": []}}
+{"files": ["main.tex", "latex/main.tex"],
+ "compile": {"attempted": false, "engine": "", "ok": false, "passes": 0,
+             "static_check": {"env_balanced": true, "braces_balanced": true, "ok": true},
+             "errors": []},
+ "formula_review": []}
 ```
 
 ## 异常处理
 
 | 情况 | 处置 |
 |---|---|
-| 无 TeX 引擎 | `attempted: false`，交付源码 + 所需宏包清单，说明未验证编译 |
+| 无 TeX 引擎 | `attempted: false`，交付源码 + 静态自检结果 + 所需宏包清单，说明未验证编译 |
 | 编译报错 | 保留 `.log`，把首条 `!` 错误与行号写进 `compile.errors` |
+| 静态自检不过 | `static_check.ok: false` 并列出未闭合的环境/括号，状态降为 `partial` |
+| 公式含无法映射的符号 | 记进 `formula_review`，标“需人工复核”，不静默丢字符 |
 | 缺字体/中文 | 提示改用 `xelatex` + `ctex`，不偷偷删内容求编译通过 |
 
 ## 适用边界

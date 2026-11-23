@@ -10,9 +10,50 @@ from .layout import HEADING_NUM, SENT_END, is_heading
 CAPTION_TABLE = re.compile(r"^\s*(table|tab\.|表)\s*([0-9]+[a-zA-Z]?|[IVXLC]+)\b[.:：]?", re.I)
 CAPTION_FIG = re.compile(r"^\s*(figure|fig\.|图)\s*([0-9]+[a-zA-Z]?|[IVXLC]+)\b[.:：]?", re.I)
 EQ_NUMBER = re.compile(r"[\(（]\s*(\d{1,3}[a-zA-Z]?)\s*[\)）]\s*$")
+# some extractors put the equation number first ("(1) L = ...") because it is a
+# separate text object at the right margin
+EQ_LEAD = re.compile(r"^\s*[\(（]\s*(\d{1,3}[a-zA-Z]?)\s*[\)）]\s*")
+ASCII_OPS = set("=+-*/^_[]<>≤≥")
 REF_ENTRY = re.compile(r"^\s*(\[(\d{1,3})\]|(\d{1,3})\.)\s+\S")
 DOI = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+\b")
 MATH_CHARS = set("∑∏∫√∞≈≠≤≥±×÷∂∇∈∉⊂⊃∪∩→←↔⇒⇔αβγδεζηθικλμνξπρστυφχψωΓΔΘΛΞΠΣΦΨΩ·∙∗⊕⊗")
+
+GREEK_TEX = {"α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta", "ε": r"\epsilon",
+             "ϵ": r"\epsilon", "ζ": r"\zeta", "η": r"\eta", "θ": r"\theta", "λ": r"\lambda",
+             "μ": r"\mu", "ν": r"\nu", "ξ": r"\xi", "π": r"\pi", "ρ": r"\rho", "σ": r"\sigma",
+             "τ": r"\tau", "φ": r"\phi", "χ": r"\chi", "ψ": r"\psi", "ω": r"\omega",
+             "Γ": r"\Gamma", "Δ": r"\Delta", "Θ": r"\Theta", "Λ": r"\Lambda", "Σ": r"\Sigma",
+             "Φ": r"\Phi", "Ψ": r"\Psi", "Ω": r"\Omega"}
+SYM_TEX = {"×": r"\times", "·": r"\cdot", "∙": r"\cdot", "−": "-", "–": "-", "≤": r"\le",
+           "≥": r"\ge", "≠": r"\neq", "≈": r"\approx", "∈": r"\in", "∉": r"\notin",
+           "∑": r"\sum", "∏": r"\prod", "∫": r"\int", "∞": r"\infty", "∂": r"\partial",
+           "±": r"\pm", "→": r"\to", "←": r"\leftarrow", "⇒": r"\Rightarrow",
+           "∇": r"\nabla", "∝": r"\propto", "∼": r"\sim", "∪": r"\cup", "∩": r"\cap",
+           "⊂": r"\subset", "∗": "*"}
+
+
+def formula_to_tex(text: str) -> Tuple[str, int]:
+    """Turn the extracted glyph string into compilable LaTeX.
+
+    Sub/superscript fidelity is not recoverable from the text layer alone, so
+    the result is marked low confidence; what this guarantees is that every
+    character left in `tex` is ASCII and math-safe, so a formula can never
+    break the whole LaTeX build.
+    """
+    s = re.sub(r"√\s*\(?\s*([A-Za-z0-9]+)\s*\)?", lambda m: r"\sqrt{%s}" % m.group(1), text)
+    for k, v in {**GREEK_TEX, **SYM_TEX}.items():
+        s = s.replace(k, v)
+    s = s.replace("\\", "\x00")
+    s = re.sub(r"([&%$#_{}])", r"\\\1", s)
+    s = s.replace("\x00", "\\")
+    dropped = 0
+    out = []
+    for ch in s:
+        if ord(ch) < 128:
+            out.append(ch)
+        else:
+            dropped += 1
+    return "".join(out), dropped
 
 
 def section_level(block: Dict[str, Any], body_size: float) -> int:
@@ -114,8 +155,54 @@ def detect_tables_from_lines(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return out
 
 
+_CELL_PUNCT = {".", ",", "-", "–", "/", ")", "(", "%", ":", ";"}
+
+
+def _join_cell(text: str) -> str:
+    """Join the lines of one cell without breaking decimals or hyphenated words.
+
+    PyMuPDF hands back "0\\n.\\n1" for 0.1 and "state-of-the-\\nart" for a wrapped
+    word; a blind space-join turns those into "0 . 1" and "state-of-the- art".
+    """
+    out = ""
+    for line in (text or "").split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if not out:
+            out = line
+        elif line in _CELL_PUNCT or out.endswith("-"):
+            out += line
+        else:
+            out += " " + line
+    return out
+
+
+def split_multiline_rows(rows: List[List[str]], max_split: int = 8) -> List[List[str]]:
+    """Expand a row whose every cell holds N stacked values into N rows.
+
+    Borderless tables come back from the engine as one row per *row group*:
+    the Transformer layer table is 2 rows instead of 5, and every cell of the
+    data row contains the four layer names stacked on top of each other.  When
+    two or more non-empty cells share the same line count, that is a row group,
+    not a single row.
+    """
+    out: List[List[str]] = []
+    for r in rows:
+        cols = [(c or "").split("\n") for c in r]
+        counts = [len(c) for c in cols if any(x.strip() for x in c)]
+        k = counts[0] if counts and len(set(counts)) == 1 else 1
+        if 2 <= k <= max_split and len(counts) >= 2:
+            for i in range(k):
+                out.append([(c[i] if i < len(c) else "") for c in cols])
+        else:
+            out.append(["\n".join(c) for c in cols])
+    return out
+
+
 def normalize_table(rows: List[List[str]], max_rows: int = 200, max_cols: int = 30) -> Dict[str, Any]:
-    rows = [[(c or "").replace("\n", " ").strip() for c in r][:max_cols] for r in rows[:max_rows]]
+    rows = split_multiline_rows([r[:max_cols] for r in rows[:max_rows]])
+    rows = [[_join_cell(c).strip() for c in r] for r in rows][:max_rows]
     width = max((len(r) for r in rows), default=0)
     rows = [r + [""] * (width - len(r)) for r in rows]
     header = rows[0] if rows else []
@@ -377,6 +464,26 @@ def prune_figures(figures: List[Dict[str, Any]], min_ratio: float = 0.02
 
 
 
+def _ascii_mathy(text: str) -> bool:
+    """Math written with plain ASCII, which is what a poor text layer yields.
+
+    "L = sqrt(1/T) * SUM_t [ -log p(y_t) ]" carries no Greek or ∑, so the
+    symbol-density rule alone misses it.  Operator density plus a prose guard
+    separates it from a sentence that happens to contain "=".
+    """
+    ops = sum(1 for ch in text if ch in ASCII_OPS)
+    words = text.split()
+    if ops < 3 or len(words) > 22:
+        return False
+    low = " " + text.lower() + " "
+    prose = sum(low.count(" " + w + " ") for w in
+                ("the", "we", "of", "that", "is", "are", "and", "in", "to", "with",
+                 "for", "this", "our", "was", "were", "which", "as"))
+    if prose >= 2:
+        return False
+    return ops / max(1, len(text)) >= 0.08
+
+
 def _mathy(text: str) -> bool:
     if len(text) < 3 or len(text) > 400:
         return False
@@ -384,13 +491,18 @@ def _mathy(text: str) -> bool:
     weak = sum(1 for ch in text if ch in MATH_CHARS)
     has_eq = "=" in text or "≈" in text
     words = len(text.split())
+    # prose that happens to contain "=" is not an equation: real display maths
+    # carries a much higher punctuation/symbol ratio
+    symbols = sum(1 for ch in text if not ch.isalnum() and not ch.isspace())
+    if not (EQ_NUMBER.search(text) or EQ_LEAD.match(text)) and symbols / max(1, len(text)) < 0.10:
+        return False
     if strong >= 2 and words <= 30:
         return True
     if has_eq and weak >= 1 and words <= 30:
         return True
     if words <= 8 and re.search(r"(^|\s)[A-Za-z]\s*[=<>≈]\s*[A-Za-z0-9(]", text):
         return True
-    return False
+    return _ascii_mathy(text)
 
 
 def find_formulas(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -406,19 +518,27 @@ def find_formulas(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         m = EQ_NUMBER.search(text)
         num = m.group(1) if m else ""
         if not num:
+            lead = EQ_LEAD.match(text)
+            if lead:
+                num = lead.group(1)
+                text = text[lead.end():].strip()
+        if not num:
             for b in cur:
-                mm = EQ_NUMBER.search(b["text"])
+                mm = EQ_NUMBER.search(b["text"]) or EQ_LEAD.match(b["text"])
                 if mm:
                     num = mm.group(1)
                     break
+        tex, dropped = formula_to_tex(text)
         out.append({"id": f"eq-{cur[0]['id']}", "page": cur[0]["page"], "block": cur[0]["id"],
-                    "blocks": [b["id"] for b in cur], "number": num, "text": text})
+                    "blocks": [b["id"] for b in cur], "number": num, "text": text,
+                    "tex": tex, "tex_confidence": "low" if dropped else "medium",
+                    "tex_dropped_chars": dropped})
         cur = []
 
     for b in blocks:
         text = b["text"].strip()
         mathy = _mathy(text)
-        eqnum = bool(EQ_NUMBER.search(text)) and len(text) < 60
+        eqnum = bool(EQ_NUMBER.search(text) or EQ_LEAD.match(text)) and len(text) < 60
         if mathy or eqnum:
             b["type"] = "formula"
             if cur and cur[-1]["page"] == b["page"] and (b["bbox"][1] - cur[-1]["bbox"][3]) < 26:
@@ -460,6 +580,74 @@ def find_references(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return entries
 
 
+AFFIL_WORDS = {
+    "university", "universitat", "université", "universidad", "institute", "institut",
+    "department", "dept", "school", "college", "laboratory", "lab", "academy", "faculty",
+    "research", "center", "centre", "science", "sciences", "engineering", "technology",
+    "google", "brain", "microsoft", "facebook", "meta", "deepmind", "openai", "amazon",
+    "apple", "nvidia", "ibm", "intel", "adobe", "baidu", "tencent", "alibaba", "huawei",
+    "inc", "ltd", "corp", "corporation", "gmbh", "hospital", "clinic", "group", "labs",
+    # cities that sit between a name and its affiliation ("… Tilburg University")
+    "toronto", "tilburg", "amsterdam", "utrecht", "nijmegen", "leuven", "ghent", "zurich",
+    "geneva", "lausanne", "berlin", "munich", "heidelberg", "paris", "grenoble", "lyon",
+    "london", "cambridge", "oxford", "edinburgh", "dublin", "copenhagen", "stockholm",
+    "helsinki", "oslo", "prague", "warsaw", "beijing", "shanghai", "hangzhou", "shenzhen",
+    "tokyo", "kyoto", "seoul", "singapore", "sydney", "melbourne", "seattle", "boston",
+    "pittsburgh", "austin", "atlanta", "chicago", "montreal", "stanford", "berkeley",
+    "york", "francisco", "angeles", "diego", "ann", "arbor", "college", "station",
+}
+NAME_MARKERS = re.compile(r"[∗†‡§¶#*✝♠♣♥♦]")
+NAME_TOKEN = re.compile(r"^[A-ZÀ-ÖØ-ÞŁŚŻŹĆŃ][\w'’.-]*$|^[A-Z]\.$")
+
+
+def names_from_author_line(text: str) -> List[str]:
+    """Pull person names out of "Name∗ Affiliation email Name∗ Affilation ...".
+
+    The author region is one of the messiest parts of a PDF: names, markers,
+    affiliations and emails are glued into a single line.  Emails and
+    affiliation vocabulary act as separators; what remains in runs of 2-4
+    capitalised tokens is a name.
+    """
+    text = re.sub(r"\S+@\S+", " ", text)
+    text = NAME_MARKERS.sub(" ", text)
+    text = re.sub(r"\b(and|&)\b", " ", text)
+    names: List[str] = []
+    run: List[str] = []
+
+    def flush():
+        nonlocal run
+        if 2 <= len(run) <= 4 and all(len(w) > 1 for w in run):
+            names.append(" ".join(run))
+        run = []
+
+    for raw in text.split():
+        trail = raw[-1] if raw else ""
+        tok = re.sub(r"\d+$", "", raw.strip(",;:.")) if not raw.endswith(".") else raw.strip(",;:")
+        if not tok:
+            flush()
+            continue
+        low = tok.lower().strip(".")
+        if low in AFFIL_WORDS or low in {"the", "of", "at", "in", "for"}:
+            flush()
+            continue
+        if NAME_TOKEN.match(tok) and not re.search(r"\d", tok):
+            run.append(tok)
+            # a comma ends a name: "Mira Kovacs, Daniel Osei" is two people, not
+            # one long run of capitalised tokens
+            if trail in ",;":
+                flush()
+        else:
+            flush()
+    flush()
+    seen, out = set(), []
+    for n in names:
+        key = n.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(n)
+    return out[:24]
+
+
 def extract_metadata(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]], body_size: float) -> Dict[str, Any]:
     meta: Dict[str, Any] = {"title": "", "authors": [], "abstract": "", "keywords": [], "doi": ""}
     first = [b for b in blocks if b["page"] == pages[0]["number"]]
@@ -490,31 +678,46 @@ def extract_metadata(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]], 
         if len(cand["text"]) > 6:
             meta["title"] = cand["text"].strip()
             meta["title_block"] = cand["id"]
-    # authors: lines between title and abstract, split names from affiliations
+    # authors: everything between the title and the abstract is one author region
     if meta["title_block"]:
         idx = next(i for i, b in enumerate(first) if b["id"] == meta["title_block"])
-        affil = re.compile(r"(universit|institut|department|dept\.|school|college|laborator|"
-                           r"academy|research|inc\.|ltd|corp|brain|google|microsoft|facebook|"
-                           r"@|https?://|\d{4})", re.I)
-        for b in first[idx + 1: idx + 14]:
+        region: List[str] = []
+        # a long title wraps into a second heading block ("… Machine" / "Translation");
+        # consuming it here keeps it out of the author run
+        start = idx + 1
+        while (start < len(first) and first[start]["type"] == "heading"
+               and not re.match(r"^(abstract|摘要)", first[start]["text"], re.I)):
+            start += 1
+        for b in first[start: start + 16]:
             t = b["text"].strip()
-            if re.match(r"^(abstract|摘要)", t, re.I):
+            if re.match(r"^(abstract|摘要)\b", t, re.I):
                 break
-            if affil.search(t) or len(t) > 120:
-                continue
-            words = t.replace(",", " ").split()
-            if 1 < len(words) <= 8 and sum(1 for w in words if w[:1].isupper()) >= max(1, len(words) - 1):
-                meta["authors"].append(re.sub(r"\s*[∗†‡§¶]\s*", "", t))
-        if not meta["authors"]:
-            # names glued to their affiliation: cut the string at the affiliation
-            cut = re.compile(r"\s+(?=(?:[A-Z][\w&.-]*\s+){0,3}(?:Universit|Institut|Department|Dept|School|"
-                             r"College|Laborator|Academy|Research|Inc\b|Ltd\b|Corp\b))", re.I)
-            for b in first[idx + 1: idx + 14]:
-                t = b["text"].split("@")[0]
-                head = cut.split(t)[0].strip()
-                words = head.replace(",", " ").split()
-                if 1 < len(words) <= 6 and all(w[:1].isupper() for w in words if w[:1].isalpha()):
-                    meta["authors"].append(head)
+            if re.match(r"^(keywords?|关键词|CCS Concepts|ACM Reference)", t, re.I):
+                break
+            region.append(t)
+        if region:
+            # Names come first on their line; the affiliation follows.  Cutting
+            # each line at the first affiliation word keeps "Institute of
+            # Computational Linguistics" from being read as a person's name,
+            # while "Ashish Vaswani∗ Google Brain" still yields the name.
+            heads = []
+            for line in region:
+                low = line.lower()
+                cut = len(line)
+                for w in AFFIL_WORDS:
+                    m = re.search(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", low)
+                    if m and m.start() < cut:
+                        cut = m.start()
+                heads.append(line[:cut].strip())
+            meta["authors"] = names_from_author_line(" ".join(h for h in heads if h))
+            if not meta["authors"]:
+                meta["authors"] = names_from_author_line(" ".join(region))
+            # a single-line paper header ("A. Author, B. Author") has no markers
+            if not meta["authors"]:
+                meta["authors"] = [n.strip() for n in re.split(r",|;| and ", " ".join(region))
+                                   if 2 <= len(n.split()) <= 4][:16]
+        if len(meta["authors"]) < 2:
+            meta["authors_uncertain"] = True
     # abstract
     for i, b in enumerate(blocks):
         if re.match(r"^\s*(abstract|摘要)\b[.:：]?\s*", b["text"], re.I):

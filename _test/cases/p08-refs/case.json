@@ -1,0 +1,11 @@
+{
+  "case_id": "self-refs",
+  "topic": "写作04 参考文献与引用管理",
+  "note": "自建引用核对用例：正文引用 [5] 无对应条目、条目 [4] 未被引用、[2] 与 [4] DOI 重复。",
+  "output_contract": {
+    "entries": "parsed entries",
+    "issues": "missing/uncited/duplicate",
+    "formatted": "gbt/apa/bibtex",
+    "status": "complete|partial|unable"
+  }
+}

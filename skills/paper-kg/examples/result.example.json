@@ -1,35 +1,45 @@
 {
   "case_id": "example-not-a-real-case",
-  "status": "partial",
+  "status": "complete",
   "output_contract": {
-    "document": {
-      "title": "…",
-      "sections": [],
-      "block_count": 0
-    },
-    "evidence": [],
-    "status": "partial"
+    "nodes": [
+      {
+        "id": "n001",
+        "label": "Transformer",
+        "type": "method",
+        "evidence": [
+          {
+            "block": "p01-b013",
+            "page": 1
+          }
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "source": "n001",
+        "target": "n002",
+        "relation": "uses",
+        "evidence": {
+          "block": "p05-b013",
+          "quote": "The Transformer uses multi-head attention"
+        }
+      }
+    ],
+    "status": "complete"
   },
   "field_status": {
-    "document": {
-      "method": "exact",
-      "confidence": 1.0,
-      "declared_type": "object"
+    "nodes": {
+      "method": "example",
+      "confidence": 1.0
     },
-    "evidence": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "unknown"
+    "edges": {
+      "method": "example",
+      "confidence": 1.0
     },
     "status": {
-      "method": "slice",
-      "confidence": 0.95,
-      "declared_type": "string",
-      "enum": [
-        "complete",
-        "partial",
-        "unable"
-      ]
+      "method": "example",
+      "confidence": 1.0
     }
   },
   "evidence": [
@@ -41,7 +51,7 @@
   ],
   "uncertainty": {
     "notes": [
-      "这是接口示意，不是任何真实案例的答案"
+      "这是接口示意，字段值不是任何真实案例的答案"
     ],
     "missing": []
   },

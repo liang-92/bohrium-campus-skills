@@ -1,0 +1,15 @@
+{
+  "case_id": "self-parse-single",
+  "topic": "阅读01 文献文档解析",
+  "note": "自建单栏三页用例，含无边框表格、带编号公式、四位作者、四条参考文献（一条重复 DOI、一条未被引用、正文引用了不存在的 [5]）。",
+  "output_contract": {
+    "document": "title/authors/abstract/pages/engine",
+    "structure": "section tree",
+    "content.blocks": "list with page + block id",
+    "content.tables": "caption/header/rows",
+    "content.formulas": "number/text/block",
+    "content.references": "n/text/page",
+    "coverage": "per-page chars, empty pages, issues",
+    "status": "complete|partial|unable"
+  }
+}

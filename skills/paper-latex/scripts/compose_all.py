@@ -196,32 +196,76 @@ SEED_GLOSSARY = {
 }
 
 
+MAX_SEGMENTS = 120
+SEG_CHARS = 700
+SKIP_SECTION = re.compile(r"(references|bibliography|参考文献|acknowledg|appendix|supplementary)", re.I)
+
+
+def _seg_priority(section: str) -> int:
+    s = (section or "").lower()
+    if "abstract" in s or "摘要" in s:
+        return 0
+    if "introduction" in s or "引言" in s:
+        return 1
+    if any(k in s for k in ("method", "approach", "model", "方法", "模型")):
+        return 2
+    if any(k in s for k in ("experiment", "result", "evaluation", "实验", "结果")):
+        return 3
+    if any(k in s for k in ("conclusion", "discussion", "结论", "讨论")):
+        return 4
+    return 5
+
+
 def build_translate(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     d = doc["document"]
     evidence: List[Dict[str, Any]] = []
     segments: List[Dict[str, Any]] = []
     seg_id = 0
+    buf, buf_meta = "", None
+
+    def flush():
+        nonlocal buf, buf_meta, seg_id
+        if not buf.strip() or not buf_meta:
+            buf, buf_meta = "", None
+            return
+        seg_id += 1
+        segments.append({"seg": f"s{seg_id:04d}", "block": buf_meta["block"], "page": buf_meta["page"],
+                         "section": buf_meta["section"], "type": buf_meta["type"], "source": buf.strip(),
+                         "protected": protected_tokens(buf), "translation": ""})
+        add_evidence(evidence, ev(buf_meta["raw"], "segment source"))
+        buf, buf_meta = "", None
+
     for b in d["blocks"]:
         if b["type"] not in {"body", "heading", "caption"}:
             continue
-        text = b["text"].strip()
-        if len(text) < 2:
+        if b.get("in_table"):
             continue
-        chunks, cur = [], ""
-        for s in sentences(text) or [text]:
-            if len(cur) + len(s) > 850 and cur:
-                chunks.append(cur.strip())
-                cur = s
-            else:
-                cur = (cur + " " + s).strip()
-        if cur:
-            chunks.append(cur)
-        for ch in chunks:
-            seg_id += 1
-            segments.append({"seg": f"s{seg_id:04d}", "block": b["id"], "page": b["page"],
-                             "section": sec_of(b), "type": b["type"], "source": ch,
-                             "protected": protected_tokens(ch), "translation": ""})
-        add_evidence(evidence, ev(b, "segment source"))
+        if SKIP_SECTION.search(b.get("section") or ""):
+            continue
+        text = b["text"].strip()
+        if len(text) < 2 or re.match(r"^\s*\[\d{1,3}\]", text):
+            continue
+        same_flow = buf_meta and buf_meta["page"] == b["page"] and buf_meta["section"] == b.get("section")
+        if same_flow and len(buf) + len(text) <= SEG_CHARS:
+            buf = (buf + " " + text).strip()
+            continue
+        flush()
+        if len(text) <= SEG_CHARS:
+            buf, buf_meta = text, {"block": b["id"], "page": b["page"], "section": sec_of(b),
+                                   "type": b["type"], "raw": b}
+        else:
+            for ch in [text[i:i + SEG_CHARS] for i in range(0, len(text), SEG_CHARS)]:
+                buf, buf_meta = ch, {"block": b["id"], "page": b["page"], "section": sec_of(b),
+                                     "type": b["type"], "raw": b}
+                flush()
+    flush()
+
+    deferred = 0
+    if len(segments) > MAX_SEGMENTS:
+        ranked = sorted(range(len(segments)), key=lambda i: (_seg_priority(segments[i]["section"]), i))
+        keep = set(ranked[:MAX_SEGMENTS])
+        deferred = len(segments) - len(keep)
+        segments = [s for i, s in enumerate(segments) if i in keep]
 
     terms = keyphrases(d, top=60)
     for t in terms:
@@ -231,9 +275,13 @@ def build_translate(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 if k in t["term"].lower():
                     t["zh"] = v
                     break
+    ids = [s["seg"] for s in segments]
+    batches = [ids[i:i + 20] for i in range(0, len(ids), 20)]
     payload = {
         "document": {"title": d["meta"].get("title", ""), "pages": d["source"]["pages"]},
         "segments": segments,
+        "batches": batches,
+        "deferred_segments": deferred,
         "glossary": terms,
         "rules": {
             "unit_of_translation": "segment",
@@ -241,11 +289,15 @@ def build_translate(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             "keep_verbatim": ["numbers", "units", "citation markers", "figure/table numbers",
                               "formulas", "model/dataset proper names", "URLs", "DOIs"],
             "register": "academic Chinese, no added claims, no dropped hedges",
+            "batch_size": 20,
+            "how_to_fill": "translate one batch per request, write fill.json, rerun run.py --fill",
         },
     }
     status = "partial"
-    notes = [f"{len(segments)} segments prepared; translations left empty for the agent "
-             f"to fill, then run scripts/verify.py"]
+    notes = [f"{len(segments)} segments in {len(batches)} batches of <=20; translations are empty "
+             f"until the agent fills fill.json and reruns with --fill"]
+    if deferred:
+        notes.append(f"{deferred} low-priority segments were deferred to stay inside the request budget")
     return payload, evidence, {"notes": ["translation field is intentionally empty until the agent fills it"],
                                "missing": []}, status, notes
 
@@ -272,7 +324,8 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 bullets["question"].append((s, b))
             if re.search(r"\b(we|results?|experiments?)\b.{0,30}\b(find|show|demonstrate|observe|reveal|achieve|outperform)", low):
                 bullets["finding"].append((s, b))
-            if re.search(r"\b(limitation|limited to|caveat|future work|do not|does not|cannot)\b", low):
+            if re.search(r"\b(limitation|limitations|limited|limited to|caveat|future work|"
+                         r"do not|does not|cannot|scope of the claim|only (?:one|two|single))\b", low):
                 bullets["limitation"].append((s, b))
             if re.search(r"\b(we|this paper)\b.{0,30}\b(contribute|propose|introduce|present|release)\b", low):
                 bullets["contribution"].append((s, b))
@@ -395,17 +448,42 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
 ENTITY_HINTS = {
     "method": r"\b(transformer|bert|gpt|cnn|rnn|lstm|svm|random forest|xgboost|attention|"
               r"encoder|decoder|embedding|fine-tuning|prompting|distillation|quantization)\b",
-    "dataset": r"\b([A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*){0,3}\s+(?:dataset|corpus|benchmark))\b",
+    "dataset": r"\b([A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*){0,3}\s+(?:dataset|corpus|benchmark))\b"
+               r"|\b(WMT\s?\d{2,4}(?:\s+[A-Z][a-z]+-[A-Z][a-z]+)?|IWSLT\s?\d{2,4}|"
+               r"CoNLL[-\s]?\d{2,4}|SQuAD(?:\s?2\.0)?|GLUE|ImageNet|MS-?COCO|WikiText-\d+|"
+               r"LibriSpeech|Multi30k|Penn Treebank)\b",
     "metric": r"\b(accuracy|precision|recall|f1|bleu|rouge|perplexity|auc|mse|mae|rmse|map)\b",
+    "tool": r"\b(fairseq|pytorch|tensorflow|jax|spacy|opennmt|moses|kenlm|huggingface|"
+            r"transformers|scikit-learn|xgboost|lightgbm)\b",
     "task": r"\b(classification|translation|summarization|question answering|segmentation|"
             r"detection|generation|retrieval|regression|clustering)\b",
 }
+# the capitalised-entity patterns must stay case sensitive: with re.I they match
+# ordinary lowercase prose ("of the corpus") and pollute the graph
+CASE_SENSITIVE_KINDS = {"dataset", "tool"}
 REL_PATTERNS = [
     ("uses", r"([A-Z][\w-]{2,}(?:\s+[A-Z][\w-]{2,}){0,2})\s+(?:uses?|employs?|leverages?|is based on|relies on)\s+([A-Za-z][\w-]{2,}(?:\s+[A-Za-z][\w-]{2,}){0,2})"),
     ("evaluated_on", r"([A-Za-z][\w-]{2,})\s+(?:is|was|are|were)?\s*(?:evaluated|tested|benchmarked|trained|fine-tuned)\s+(?:on|with|using)\s+([A-Za-z0-9][\w-]{2,})"),
     ("outperforms", r"([A-Z][\w-]{2,}(?:\s+[A-Z][\w-]{2,}){0,2})\s+(?:outperforms?|surpasses?|beats?)\s+([A-Z][\w-]{2,}(?:\s+[A-Z][\w-]{2,}){0,2})"),
     ("improves", r"([A-Za-z][\w-]{2,})\s+(?:improves?|increases?|reduces?)\s+([A-Za-z][\w-]{2,})"),
 ]
+
+
+GENERIC_HEADINGS = re.compile(
+    r"^\s*(\d+\.?\s*)?(abstract|introduction|related work|background|conclusion|conclusions|"
+    r"references|bibliography|acknowledg\w*|appendix|supplementary|keywords?)\s*$", re.I)
+CUE_VERBS = [
+    ("uses", r"\b(uses?|employs?|leverages?|relies on|is based on)\b"),
+    # the preposition is part of the pattern: "practical to train [3]" is not a
+    # trained_on relation, "trained on WMT 2014" is
+    ("trained_on", r"\b(?:trained|trains?|train|fine-tuned|pre-trained|pretrained)\s+(?:on|with|using)\b"),
+    ("evaluated_on", r"\b(?:evaluated|evaluates?|tested|tests?|benchmarked|benchmarks?)\s+(?:on|with|using)\b"),
+    ("outperforms", r"\b(outperforms?|surpasses?|beats?|improves? (?:up)?on)\b"),
+    ("improves", r"\b(improves?|reduces?|increases?|achieves?)\b"),
+    ("proposes", r"\b(proposes?|introduces?|presents?|describes?)\b"),
+]
+STOP_OBJ = {"the", "a", "an", "this", "that", "these", "those", "its", "their", "our", "we",
+            "it", "they", "on", "in", "of", "to", "for", "with", "by", "and", "or", "as"}
 
 
 def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
@@ -426,24 +504,96 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         keymap[low] = nid
         return nid
 
-    for b in d["blocks"]:
+    def add_edge(a: str, c: str, rel: str, sentence: str, b: Dict[str, Any]) -> None:
+        if not a or not c or a == c:
+            return
+        for e in edges:
+            if e["source"] == a and e["target"] == c and e["relation"] == rel:
+                return
+        edges.append({"source": a, "target": c, "relation": rel,
+                      "evidence": {"block": b["id"], "page": b["page"],
+                                   "quote": sentence.strip()[:300]}})
+        add_evidence(evidence, ev(b, f"relation {rel}"))
+
+    # 1) seed nodes: substantive headings + typed entities
+    # the title often arrives as two heading blocks ("… Neural Machine" +
+    # "Translation"); both are title text, not concepts
+    title = (d["meta"].get("title") or "").lower().strip()
+    zone = [title]
+    for b in d["blocks"][:6]:
         if b["type"] == "heading":
-            node(b["text"][:80], "concept", b)
+            zone.append(b["text"].lower().strip())
+        elif zone[-1] != title:
+            break
+    title_zone = " ".join(z for z in zone if z)
+    for b in d["blocks"]:
+        if b["type"] == "heading" and not GENERIC_HEADINGS.match(b["text"]):
+            h = b["text"].strip()
+            is_title_part = bool(title_zone) and h.lower() in title_zone and len(h.split()) <= 12
+            if not is_title_part and (b.get("level") or 1) <= 3 and 3 < len(h) < 90:
+                node(h, "concept", b)
         for kind, rx in ENTITY_HINTS.items():
-            for m in re.finditer(rx, b["text"], re.I):
-                node(m.group(0), kind, b)
-        for rel, rx in REL_PATTERNS:
-            for m in re.finditer(rx, b["text"]):
-                a, c = m.group(1), m.group(2)
-                if len(a) < 3 or len(c) < 3:
+            flags = 0 if kind in CASE_SENSITIVE_KINDS else re.I
+            for m in re.finditer(rx, b["text"], flags):
+                if 2 < len(m.group(0)) < 70:
+                    node(m.group(0), kind, b)
+
+    # 2) relation pass over sentences: co-mention + cue verb
+    for b in d["blocks"]:
+        if b["type"] not in ("body", "heading"):
+            continue
+        for sentence in sentences(b["text"], 400):
+            if len(sentence) < 40:
+                continue
+            s_low = sentence.lower()
+            hits = []
+            for label, nid in list(keymap.items()):
+                if len(label) < 4:
                     continue
-                ia = node(a, "entity", b)
-                ic = node(c, "entity", b)
-                if ia == ic:
+                if label in s_low and not any(h[0] == nid for h in hits):
+                    hits.append((nid, label))
+            hits = hits[:6]
+            if len(hits) >= 2:
+                base = hits[0][0]
+                for nid, _ in hits[1:]:
+                    add_edge(base, nid, "related_to", sentence, b)
+                continue
+            if len(hits) == 1:
+                for rel, rx in CUE_VERBS:
+                    m = re.search(rx, sentence, re.I)
+                    if not m:
+                        continue
+                    tail = sentence[m.end():].strip(" ,.;:")
+                    words = [w for w in tail.split()[:5] if w.lower().strip(",.()") not in STOP_OBJ]
+                    if len(words) < 1:
+                        continue
+                    obj = " ".join(words[:4]).strip(" ,.;:()")
+                    if 2 < len(obj) < 60 and not re.match(r"^(the|a|an|this|that)\b", obj, re.I):
+                        add_edge(hits[0][0], node(obj, "entity", b), rel, sentence, b)
+                    break
+
+    # 2b) section -> entity: an entity mentioned inside a section is linked to
+    # that section's node.  The evidence is the block that carries both, so the
+    # edge is as checkable as any other -- it is not a co-occurrence guess.
+    section_nodes = {n["label"].lower().strip(): n["id"]
+                     for n in nodes.values() if n["type"] == "concept"}
+    if section_nodes:
+        for b in d["blocks"]:
+            if b["type"] not in ("body", "heading"):
+                continue
+            hid = section_nodes.get((sec_of(b) or "").lower().strip())
+            if not hid:
+                continue
+            low = b["text"].lower()
+            added = 0
+            for label, nid in list(keymap.items()):
+                if added >= 5:
+                    break
+                if nid == hid or len(label) < 4 or nodes.get(label, {}).get("type") == "concept":
                     continue
-                edges.append({"source": ia, "target": ic, "relation": rel,
-                              "evidence": {"block": b["id"], "page": b["page"], "quote": m.group(0)[:200]}})
-                add_evidence(evidence, ev(b, f"relation {rel}"))
+                if label in low:
+                    add_edge(hid, nid, "mentions", b["text"][:300], b)
+                    added += 1
 
     # alias normalisation: same label ignoring case/plural/hyphen
     def canon(s: str) -> str:
@@ -457,7 +607,7 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     aliases = [{"canonical": k, "nodes": v} for k, v in buckets.items() if len(v) > 1]
 
     queries = []
-    for rel in ("uses", "evaluated_on", "outperforms"):
+    for rel in ("uses", "trained_on", "evaluated_on", "outperforms", "related_to"):
         hits = [e for e in edges if e["relation"] == rel][:5]
         queries.append({"q": f"which pairs are linked by '{rel}'?", "answer": hits})
 
@@ -470,9 +620,15 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                     "\n".join(f"MERGE (:{n['type']} {{name:'{n['label']}'}})" for n in list(nodes.values())[:80])},
         "stats": {"nodes": len(nodes), "edges": len(edges)},
     }
-    status = "complete" if len(nodes) >= 8 and edges else "partial"
-    return payload, evidence, {"notes": ["relations only where an explicit pattern matched"],
-                               "missing": []}, status, [f"{len(nodes)} nodes, {len(edges)} edges"]
+    # a graph where every node is isolated is not a graph: gate on density
+    enough = len(nodes) >= 8 and len(edges) >= max(10, int(len(nodes) * 0.4))
+    status = "complete" if enough else "partial"
+    notes = [f"{len(edges)} edges over {len(nodes)} nodes; relations come from cue verbs "
+             f"and sentence-level co-mention, each with its supporting sentence"]
+    if not enough:
+        notes.append("edge density below the completeness gate (nodes*0.4); treat as partial")
+    return payload, evidence, {"notes": notes, "missing": []}, status, \
+        [f"{len(nodes)} nodes, {len(edges)} edges"]
 
 
 # --------------------------------------------------------------------------- #
@@ -499,8 +655,14 @@ def build_polish(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             if re.search(r"\b(don't|doesn't|can't|won't|isn't|aren't)\b", s):
                 flags.append("contraction")
             if flags:
-                issues.append({"block": b["id"], "page": b["page"], "sentence": s[:300], "flags": flags})
+                issues.append({"block": b["id"], "page": b["page"], "sentence": s[:300],
+                               "flags": flags, "protected": protected_tokens(s)})
                 add_evidence(evidence, ev(b, "style issue"))
+            elif re.search(r"\d", s) or CITE_BRACKET.search(s):
+                # sentences carrying numbers or citations enter the rewrite queue
+                # even without a style flag: they are the ones a rewrite can corrupt
+                issues.append({"block": b["id"], "page": b["page"], "sentence": s[:300],
+                               "flags": ["numeric"], "protected": protected_tokens(s)})
             for m in ABBR_DEF.finditer(s):
                 variants.setdefault(m.group(2), {"def": 0, "redef": 0})["def"] += 1
         for term in ("dataset", "data set", "datasets", "data sets"):
@@ -515,6 +677,11 @@ def build_polish(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     payload = {
         "genre": detect_genre(task, d["meta"].get("title", "")),
         "sentence_issues": issues[:120],
+        # one empty edit record per flagged sentence: the agent fills `revised`
+        # and `reason`, so "what is still unchanged" is visible instead of implied
+        "rewrites": [{"block": i["block"], "page": i["page"], "original": i["sentence"],
+                      "revised": "", "type": "", "reason": "",
+                      "kept": i.get("protected") or {}} for i in issues[:40]],
         "consistency": consistency,
         "edit_record_schema": {
             "block": "source block id", "original": "verbatim source sentence",
@@ -545,33 +712,72 @@ def detect_genre(task: str, title: str) -> str:
 # 7. references
 # --------------------------------------------------------------------------- #
 def parse_ref_entry(text: str) -> Dict[str, Any]:
-    """Split one reference line into the four fields a citation style needs.
+    """Split one reference line into the fields a citation style needs.
 
-    Reference lines arrive in wildly different shapes ("[3] A. Author, B. Author.
-    Title. Venue, 2020." / "Author (2020). Title. Journal.").  The author list is
-    the part before the first sentence break that does not already contain a
-    year, which keeps venue/year out of the `author` field; everything else is
-    left empty rather than guessed.
+    Two shapes dominate: "Author A, Author B. Title[C]//Venue. 2017: 1-10." and
+    "Author A, Author B. Title. Venue, 2017, 12(3): 1-10."  The authors end at
+    the first sentence break, the title ends at the type marker (``[C]``), at
+    ``//`` or at the next sentence break, and nothing is invented when a field
+    is absent.
     """
     year = re.search(r"\b(19|20)\d{2}[a-z]?\b", text)
     doi = re.search(r"10\.\d{4,9}/[^\s,;]+", text)
     body = re.sub(r"^\s*\[\d{1,3}\]\s*", "", text).strip()
+
+    kind = ""
+    tm = re.search(r"\[(EB/OL|C|J|M|D|R|S|N)\]", body)
+    if tm:
+        kind = tm.group(1)
+
     head = body.split(".")[0].strip(" .,")
     if 5 <= len(head) <= 180 and not re.search(r"\b(19|20)\d{2}\b", head):
-        authors = head
+        authors, rest = head, body[len(head):].lstrip(". ")
     else:
-        authors = body.split("(")[0].strip(" .,")
-    title = ""
-    m = re.search(r"[\"“](.+?)[\"”]", text)
-    if m:
-        title = m.group(1)
+        authors, rest = body.split("(")[0].strip(" .,"), body
+
+    cut = len(rest)
+    for pat in (r"\[(?:EB/OL|[A-Z/]{1,4})\]", r"\s//", r"\.\s"):
+        m = re.search(pat, rest)
+        if m and m.start() < cut:
+            cut = m.start()
+    title = re.sub(r"\s+", " ", rest[:cut]).strip(" .,")
+    tail = rest[cut:]
+
+    venue = ""
+    vm = re.search(r"//\s*([^.;]{2,90})", tail)
+    if vm:
+        venue = vm.group(1).strip(" ,.")
     else:
-        parts = [p.strip() for p in body.split(".") if len(p.strip()) > 12]
-        if len(parts) >= 2:
-            title = parts[1][:180]
+        vm = re.search(r"((?:Proceedings|Proc\.|Conference|Workshop|Journal|Transactions|Letters|"
+                       r"Review|Magazine|arXiv[^\s,]*|Symposium|NeurIPS|ACL|NAACL|EMNLP|ICLR|ICML|"
+                       r"AAAI|CVPR|ICCV)[^,.;]{0,80})", tail, re.I)
+        if vm:
+            venue = re.sub(r"\s+", " ", vm.group(1)).strip(" ,.;")
+
+    volume = issue = pages = ""
+    pm = re.search(r"(\d{1,4})\s*[–-]\s*(\d{1,4})", tail)
+    if pm:
+        pages = f"{pm.group(1)}-{pm.group(2)}"
+    vim = re.search(r"\b(\d{1,4})\s*(?:\((\d{1,3})\))?\s*(?=[,:])", tail)
+    if vim and not (year and vim.group(1) == year.group(0)):
+        volume = vim.group(1)
+        issue = vim.group(2) or ""
+
+    if not kind:
+        hint = f"{venue} {tail}"
+        if re.search(r"proceedings|conference|workshop|symposium|proc\.|neurips|acl|emnlp|iclr|icml",
+                     hint, re.I):
+            kind = "C"
+        elif re.search(r"arxiv|preprint|corr\b", hint, re.I):
+            kind = "EB/OL"
+        elif re.search(r"\bed\.|edited|press\b", tail, re.I):
+            kind = "M"
+        else:
+            kind = "J"
     return {
         "authors": authors[:200], "year": year.group(0) if year else "",
-        "title": title, "doi": doi.group(0).rstrip(".") if doi else "",
+        "title": title[:180], "venue": venue[:160], "volume": volume, "issue": issue,
+        "pages": pages, "type": kind, "doi": doi.group(0).rstrip(".") if doi else "",
         "raw": text[:600],
     }
 
@@ -612,11 +818,34 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             seen[key] = str(e["n"])
 
     def gbt(e):
-        return f"{e['authors']}. {e['title']}[J]. {e['year']}. DOI:{e['doi']}" if e["doi"] else \
-               f"{e['authors']}. {e['title']}[J]. {e['year']}."
+        kind = e.get("type") or "J"
+        tail = ""
+        if e.get("volume"):
+            tail = f", {e['volume']}"
+            if e.get("issue"):
+                tail += f"({e['issue']})"
+        if e.get("pages"):
+            tail += f": {e['pages']}"
+        if kind == "C":
+            venue = f"//{e['venue']}" if e.get("venue") else ""
+            return f"{e['authors']}. {e['title']}[C]{venue}. {e['year']}{tail}."
+        if kind == "EB/OL":
+            return f"{e['authors']}. {e['title']}[EB/OL]. {e.get('venue') or 'arXiv'}, {e['year']}."
+        if kind == "M":
+            return f"{e['authors']}. {e['title']}[M]. {e.get('venue') or ''}, {e['year']}."
+        venue = f"{e['venue']}, " if e.get("venue") else ""
+        return f"{e['authors']}. {e['title']}[J]. {venue}{e['year']}{tail}."
 
     def apa(e):
-        return f"{e['authors']} ({e['year']}). {e['title']}."
+        tail = ""
+        if e.get("volume"):
+            tail = f", {e['volume']}"
+            if e.get("issue"):
+                tail += f"({e['issue']})"
+        if e.get("pages"):
+            tail += f", {e['pages']}"
+        venue = f"{e['venue']}{tail}. " if e.get("venue") else ""
+        return f"{e['authors']} ({e['year']}). {e['title']}. {venue}".strip()
 
     def bkey(e):
         """A stable, readable BibTeX key: familyname + year + first long word."""
@@ -626,11 +855,18 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         return (fam.lower() or "anon") + (e["year"] or "nd") + word
 
     def bibtex(e):
+        kind = {"C": "inproceedings", "M": "book", "EB/OL": "misc"}.get(e.get("type") or "J", "article")
         fields = [("author", e["authors"]), ("title", e["title"]), ("year", e["year"])]
+        if e.get("venue"):
+            fields.append(("booktitle" if kind == "inproceedings" else "journal", e["venue"]))
+        if e.get("volume"):
+            fields.append(("volume", e["volume"]))
+        if e.get("pages"):
+            fields.append(("pages", e["pages"]))
         if e["doi"]:
             fields.append(("doi", e["doi"]))
         body = ",\n  ".join(f"{k} = {{{v}}}" for k, v in fields if v)
-        return "@article{%s,\n  %s\n}" % (bkey(e), body)
+        return "@%s{%s,\n  %s\n}" % (kind, bkey(e), body)
 
     payload = {
         "entries": entries,
@@ -706,19 +942,42 @@ def build_intro(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                     "gap derived from those groups",
                     "this work's contributions, each mapped to a figure/table/result",
                     "scope and limits"],
+        "draft": {
+            "status": "to_be_written",
+            "paragraphs": [
+                {"role": "context", "text": "", "must_use": "problem_statements", "citations": []},
+                {"role": "prior_work", "text": "", "must_use": "related_work_groups", "citations": []},
+                {"role": "gap", "text": "", "must_use": "gap_statements", "citations": []},
+                {"role": "contributions", "text": "", "must_use": "contributions", "citations": []},
+                {"role": "scope", "text": "", "must_use": "outline", "citations": []},
+            ],
+            "rules": {"min_words_per_paragraph": 120,
+                      "citations": "only [n] keys that exist in the reference list",
+                      "no_new_claims": "every factual claim must trace to evidence[]",
+                      "how_to_fill": "write fill.json {\"replace\": {\"draft\": {...}}} and rerun run.py --fill"},
+        },
     }
-    status = "complete" if gaps and contributions else "partial"
-    return payload, evidence, {"notes": ["prose is written by the agent from these evidence-bound claims"],
-                               "missing": []}, status, [f"{len(gaps)} gaps, {len(contributions)} contributions"]
+    status = "partial"   # prose is missing until the agent writes it
+    notes = [f"{len(gaps)} gaps, {len(contributions)} contributions; draft has 5 empty paragraphs "
+             f"that the agent must write (fill.json replace.draft), then pass --fill"]
+    return payload, evidence, {"notes": ["prose is written by the agent from these evidence-bound claims",
+                                        "status stays partial until draft paragraphs are filled"],
+                               "missing": []}, status, notes
 
 
 # --------------------------------------------------------------------------- #
 # 9. methods
 # --------------------------------------------------------------------------- #
-HYPER = re.compile(r"\b(learning rate|batch size|epochs?|steps?|layers?|hidden (?:size|dimension|units?)|"
-                   r"dropout|weight decay|momentum|warmup|heads?|temperature|seed|patience|"
-                   r"optimizer|activation|kernel|window size|embedding (?:size|dimension))\b[^.;]{0,40}",
-                   re.I)
+HYPER_NAME = re.compile(r"\b(learning rate|batch size|epochs?|steps?|layers?|hidden (?:size|dimension|units?)|"
+                        r"dropout|weight decay|momentum|warmup|heads?|temperature|seed|patience|"
+                        r"optimizer|activation|kernel|window size|embedding (?:size|dimension))\b",
+                        re.I)
+HYPER = re.compile(HYPER_NAME.pattern + r"[^;]{0,40}", re.I)
+# "learning rate of 0.0003" must keep the decimal: stopping the context window at
+# the first "." truncated the value to "0"
+DS_NAMED = re.compile(r"\b(WMT\s?\d{2,4}(?:\s+[A-Z][a-z]+-[A-Z][a-z]+)?|IWSLT\s?\d{2,4}|"
+                      r"CoNLL[-\s]?\d{2,4}|SQuAD(?:\s?2\.0)?|GLUE|ImageNet|MS-?COCO|WikiText-\d+|"
+                      r"LibriSpeech|Multi30k|Penn Treebank)\b")
 
 
 def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
@@ -730,20 +989,32 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     seeds = []
     for b in d["blocks"]:
         for s in sentences(b["text"]):
-            for m in HYPER.finditer(s):
-                seg = m.group(0)
-                val = re.search(r"(\d+(?:[.,]\d+)?\s*" + UNIT + r"?|true|false|adam\w*|sgd|relu|gelu)", seg, re.I)
-                params.append({"name": m.group(1).lower(), "value": val.group(1) if val else "",
-                               "context": seg[:120], "block": b["id"], "page": b["page"]})
+            # scan names independently of the 40-char context window: matching
+            # "learning rate ... dropout" as one span used to swallow the other
+            # parameter names in the same sentence
+            for m in HYPER_NAME.finditer(s):
+                seg = s[m.start(): m.end() + 45].strip()
+                val = re.search(r"(\d+(?:\.\d+)?\s*" + UNIT + r"?|true|false|adam\w*|sgd|relu|gelu)",
+                                seg[m.end() - m.start():], re.I) or \
+                    re.search(r"(\d+(?:\.\d+)?)", seg, re.I)
+                name = m.group(1).lower()
+                value = val.group(1).strip() if val else ""
+                if any(p["name"] == name and p["value"] == value for p in params):
+                    continue
+                params.append({"name": name, "value": value, "context": seg[:120],
+                               "block": b["id"], "page": b["page"]})
                 add_evidence(evidence, ev(b, "parameter"))
             if re.search(r"\b(GPU|TPU|CPU|A100|V100|H100|RTX|memory|VRAM)\b", s):
                 hardware.append({"text": s[:200], "block": b["id"], "page": b["page"]})
             if re.search(r"\bseed\b", s, re.I):
                 seeds.append({"text": s[:200], "block": b["id"], "page": b["page"]})
             m = re.search(r"\b([A-Z][A-Za-z0-9-]*(?:\s+[A-Z0-9][A-Za-z0-9-]*){0,3})\s+(?:dataset|corpus)\b", s)
-            if m:
-                datasets.append({"name": m.group(1), "text": s[:220], "block": b["id"], "page": b["page"]})
-                add_evidence(evidence, ev(b, "dataset"))
+            m2 = DS_NAMED.search(s)
+            if m or m2:
+                nm = m.group(1) if m else m2.group(1)
+                if not any(x["name"].lower() == nm.lower() for x in datasets):
+                    datasets.append({"name": nm, "text": s[:220], "block": b["id"], "page": b["page"]})
+                    add_evidence(evidence, ev(b, "dataset"))
 
     checklist = [
         ("code version", bool(re.search(r"\b(github|gitlab|commit|version|release)\b", " ".join(
@@ -768,9 +1039,24 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         "missing": [k for k, v in checklist if not v],
         "limitations": [{"text": s, "block": b["id"]} for b in blocks_in(doc, r"(discussion|conclusion|limitation)")
                         for s in sentences(b["text"]) if re.search(r"\blimitation|future work|only\b", s, re.I)][:8],
+        "draft": {
+            "status": "to_be_written",
+            "paragraphs": [
+                {"role": "data", "text": "", "must_use": "datasets"},
+                {"role": "model", "text": "", "must_use": "parameters"},
+                {"role": "training", "text": "", "must_use": "parameters"},
+                {"role": "evaluation", "text": "", "must_use": "reproducibility_checklist"},
+            ],
+            "rules": {"min_words_per_paragraph": 100,
+                      "no_invented_values": "only report numbers that appear in parameters/datasets",
+                      "report_missing": "list what the paper does not report under missing[]",
+                      "how_to_fill": "write fill.json {\"replace\": {\"draft\": {...}}} and rerun run.py --fill"},
+        },
     }
-    status = "complete" if params and datasets else "partial"
-    return payload, evidence, {"notes": [], "missing": payload["missing"]}, status, \
+    status = "partial"   # the section text is missing until the agent writes it
+    notes = [f"{len(params)} parameter mentions, {len(datasets)} dataset mentions; "
+             f"draft has 4 empty paragraphs the agent must write"]
+    return payload, evidence, {"notes": notes, "missing": payload["missing"]}, status, \
         [f"{len(params)} parameter mentions, {len(datasets)} dataset mentions"]
 
 
@@ -790,6 +1076,12 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
     evidence: List[Dict[str, Any]] = []
     body: List[str] = []
     seen_sections = set()
+    formula_tex: Dict[str, Dict[str, Any]] = {}
+    for f in d.get("formulas") or []:
+        for bid in (f.get("blocks") or [f.get("block")]):
+            if bid:
+                formula_tex[bid] = f
+    formula_review: List[Dict[str, Any]] = []
     for b in d["blocks"]:
         if b["type"] == "heading":
             title = b["text"].strip()
@@ -801,7 +1093,11 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
         elif b["type"] == "body":
             body.append(tex_escape(b["text"]) + "\n")
         elif b["type"] == "formula":
-            body.append("\\begin{equation}\n  " + b["text"].strip() + "\n\\end{equation}\n")
+            f = formula_tex.get(b["id"]) or {}
+            math = f.get("tex") or tex_escape(b["text"].strip())
+            body.append("\\begin{equation}\n  " + math + "\n\\end{equation}\n")
+            if f.get("tex_confidence") == "low":
+                formula_review.append({"block": b["id"], "page": b["page"], "number": f.get("number", "")})
 
     tables_tex = []
     for i, t in enumerate(d["tables"][:8], 1):
@@ -815,7 +1111,8 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
                     for i, r in enumerate(d["references"], 1))
     tex = "\n".join([
         "\\documentclass[11pt]{article}",
-        "\\usepackage[utf8]{inputenc}\\usepackage{booktabs}\\usepackage{amsmath}\\usepackage{graphicx}",
+        "\\usepackage[utf8]{inputenc}\\usepackage[T1]{fontenc}\\usepackage{lmodern}",
+        "\\usepackage{booktabs}\\usepackage{amsmath}\\usepackage{amsfonts}\\usepackage{graphicx}",
         "\\usepackage{hyperref}",
         f"\\title{{{tex_escape(d['meta'].get('title', 'Untitled'))}}}",
         f"\\author{{{tex_escape('; '.join(d['meta'].get('authors', [])) or 'Author')}}}",
@@ -828,7 +1125,18 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
     ])
     files = {"main.tex": tex}
 
-    compile_info = {"attempted": False}
+    def static_check(src: str) -> Dict[str, Any]:
+        problems: List[str] = []
+        begins = re.findall(r"\\begin\{([^}]+)\}", src)
+        ends = re.findall(r"\\end\{([^}]+)\}", src)
+        for env in sorted(set(begins) | set(ends)):
+            if begins.count(env) != ends.count(env):
+                problems.append(f"env {env}: {begins.count(env)} begin vs {ends.count(env)} end")
+        if src.count("{") != src.count("}"):
+            problems.append(f"unbalanced braces: {src.count('{')} vs {src.count('}')}")
+        return {"ok": not problems, "problems": problems[:10]}
+
+    compile_info: Dict[str, Any] = {"attempted": False, "static_check": static_check(tex)}
     if out_dir:
         tex_dir = os.path.join(out_dir, "latex")
         os.makedirs(tex_dir, exist_ok=True)
@@ -840,30 +1148,46 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
             compile_info["engine"] = os.path.basename(engine)
             cmd = [engine, "-interaction=nonstopmode", "-halt-on-error", "main.tex"] \
                 if "latexmk" not in engine else [engine, "-pdf", "-interaction=nonstopmode", "main.tex"]
-            try:
-                proc = subprocess.run(cmd, cwd=tex_dir, capture_output=True, timeout=240)
-                log = (proc.stdout or b"").decode("utf-8", "replace")
-                compile_info["ok"] = proc.returncode == 0
-                compile_info["errors"] = [l for l in log.splitlines() if l.startswith("!")][:10]
-                compile_info["pdf"] = os.path.exists(os.path.join(tex_dir, "main.pdf"))
-            except Exception as exc:
-                compile_info["ok"] = False
-                compile_info["errors"] = [f"{type(exc).__name__}: {exc}"]
+            errors: List[str] = []
+            ok = True
+            for _ in range(2):   # second pass resolves refs / TOC
+                try:
+                    proc = subprocess.run(cmd, cwd=tex_dir, capture_output=True, timeout=240)
+                    log = (proc.stdout or b"").decode("utf-8", "replace")
+                    ok = ok and proc.returncode == 0
+                    errors = [l for l in log.splitlines() if l.startswith("!")][:10]
+                except Exception as exc:
+                    ok = False
+                    errors = [f"{type(exc).__name__}: {exc}"]
+                    break
+            compile_info["ok"] = ok
+            compile_info["errors"] = errors
+            compile_info["pdf"] = os.path.exists(os.path.join(tex_dir, "main.pdf"))
+            compile_info["passes"] = 2
 
     for b in d["blocks"][:6]:
         add_evidence(evidence, ev(b, "section source"))
     payload = {
-        "files": list(files),
+        "files": ["main.tex", "latex/main.tex"] if out_dir else ["main.tex"],
         "tex": tex[:20000],
         "compile": compile_info,
+        "formula_review": formula_review,
         "structure": [{"level": s["level"], "title": s["title"]} for s in d["sections"]],
         "environment": {"engine": compile_info.get("engine", "not found"),
-                        "packages": ["booktabs", "amsmath", "graphicx", "hyperref"]},
+                        "packages": ["booktabs", "amsmath", "amsfonts", "graphicx", "hyperref", "lmodern"]},
     }
-    status = "complete" if compile_info.get("ok") else "partial"
-    return payload, evidence, {"notes": [] if compile_info.get("ok") else
-                               ["LaTeX engine missing or compile failed; source is still complete"],
-                               "missing": []}, status, [f"main.tex {len(tex)} chars"]
+    if compile_info.get("ok"):
+        status, notes = "complete", []
+    elif not compile_info.get("attempted"):
+        status = "partial"
+        notes = ["no TeX engine on this machine: source + static_check delivered, compile not verified"]
+    else:
+        status = "partial"
+        notes = ["compile failed: see compile.errors; source kept as-is rather than deleting content"]
+    if formula_review:
+        notes.append(f"{len(formula_review)} formula(s) have low-confidence LaTeX (sub/superscripts "
+                     f"need review); listed in formula_review[]")
+    return payload, evidence, {"notes": notes, "missing": []}, status, [f"main.tex {len(tex)} chars"]
 
 
 # --------------------------------------------------------------------------- #
