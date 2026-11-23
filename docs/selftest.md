@@ -80,7 +80,7 @@ python3 -m pip install pymupdf
 
 ```bash
 cd _test/cases
-python make_cases.py          # 生成 16 个用例目录（case.json + task.md + paper.pdf + gold.json）
+python make_cases.py          # 生成 18 个用例目录（case.json + task.md + paper.pdf + gold.json）
 python run_cases.py           # 逐用例跑对应 Skill，按 gold 逐项核对
 python run_matrix.py          # 10 包 × 2 篇真实论文 + verify.py 回归
 ```

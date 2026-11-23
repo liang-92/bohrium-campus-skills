@@ -44,7 +44,7 @@ python skills/paper-parse/scripts/verify.py --out out/att --kind generic
 
 ```bash
 cd _test/cases
-python make_cases.py        # 16 个用例：10 题 + 5 类异常 + 双栏阅读顺序
+python make_cases.py        # 18 个用例：10 题 + 6 类异常 + 双栏阅读顺序
 python run_cases.py         # 跑对应 Skill，按 gold.json 逐项核对
 ```
 
@@ -168,7 +168,7 @@ python run_matrix.py                                             # 10 包 × 2 �
 
 | 证据 | 路径 | 规模 |
 |---|---|---|
-| 用例与期望值 | `_test/cases/*/gold.json` | 16 个用例 |
+| 用例与期望值 | `_test/cases/*/gold.json` | 18 个用例 |
 | 用例结果 | `_test/cases/report.md` | 17/17、34/34 断言 |
 | 十包回归 | `_test/cases/matrix.md` | 20 次运行、0 失败 |
 | 缺陷专项断言 | `_test/test_defects.py` | 14 条 |
