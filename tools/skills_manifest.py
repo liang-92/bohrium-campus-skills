@@ -342,10 +342,10 @@ python3 scripts/run.py --input /input --out /app/output --profile polish
         "mode": "refs",
         "challenge": "写作04 参考文献与引用管理",
         "title": "Paper References",
-        "description": "Audit and rebuild reference lists: parse entries, map in-text citations, detect missing/uncited/duplicate items, check numbering and format to GB/T 7714 or APA. Use when a task involves citation management, bibliography cleanup, reference verification or citation-text consistency.",
+        "description": "Audit and rebuild reference lists: parse entries, map in-text citations, detect missing/uncited/duplicate items, check numbering and emit GB/T 7714 / APA / BibTeX. Use when a task involves citation management, bibliography cleanup, reference verification or citation-text consistency.",
         "when": [
             "任务要求检查/整理参考文献、正文引用与文末列表是否一致",
-            "需要编号更新、去重、格式转换（GB/T 7714、APA）",
+            "需要编号更新、去重、格式转换（GB/T 7714、APA、BibTeX）",
             "怀疑有编造条目、重复条目、引用错位",
         ],
         "method": """引用管理的核心是“集合运算 + 字段核对”。
@@ -356,7 +356,8 @@ python3 scripts/run.py --input /input --out /app/output --profile polish
    `numbering_gaps`（编号缺号/重号）。
 4. **去重**：DOI 相同 → 同一条；无 DOI 时用标题归一化（去标点、小写、截断）比对，
    只报告“疑似”，不自动合并。
-5. **格式化**：输出 GB/T 7714 与 APA 两种写法，字段缺失处留空而不是编造。
+5. **格式化**：同时输出 GB/T 7714、APA 与 BibTeX 三种写法；BibTeX 的 citation key 由
+   「第一作者姓氏 + 年份 + 标题首个实词」生成，稳定可复现。字段缺失处留空而不是编造。
 6. **可疑条目**：无年份、无 venue、标题异常、DOI 形态不合法，单独列出待人工核验。""",
         "output": """| 字段 | 内容 |
 |---|---|

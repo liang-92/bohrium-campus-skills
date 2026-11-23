@@ -33,7 +33,17 @@ Translate research papers segment by segment with a locked glossary, protected n
 
 ## 快速开始
 
+**先定位本 Skill 的安装目录**。评测环境把它装在 `/skills/weekly-skill`，本地可能在别处，
+所以不要假设当前工作目录：脚本按 `SKILL.md` 所在目录相对定位。
+
 ```bash
+# 0) 定位：官方安装在 /skills/weekly-skill，找不到再就近搜索
+SKILL_DIR=/skills/weekly-skill
+[ -f "$SKILL_DIR/SKILL.md" ] || SKILL_DIR="$(
+  find /skills /app /workspace /opt -maxdepth 5 -name SKILL.md 2>/dev/null | head -1 | xargs -r dirname
+)"
+cd "$SKILL_DIR" || exit 1
+
 # 1) 一次跑完解析 + 组包
 python3 scripts/run.py --input /input --out /app/output
 
@@ -43,6 +53,9 @@ ls /app/output          # doc.json doc.md coverage.json result.json run.log
 # 3) 自检
 python3 scripts/verify.py --out /app/output --kind translate
 ```
+
+只依赖 Python 标准库；有 PyMuPDF 时用它做主力引擎，没有则自动退化到 pdfplumber / pypdf /
+poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默降级。
 
 `run.py` 是幂等的，可重复执行；`--no-ocr` 可跳过 OCR（更快，但扫描页会空）。
 
@@ -72,7 +85,8 @@ python3 scripts/verify.py --out /app/output --kind translate
 `translation` 初始为空是**设计如此**：这一栏必须由模型逐段填写，脚本不生成译文。
 
 `result.json` 同时保留 `case_id`、`status`、`evidence`、`uncertainty`、`provenance`，
-以及 `case.json` 里声明的 `output_contract` 字段（存在则逐项填，缺证据就留 `null` 并说明）。
+以及 `case.json` 里声明的 `output_contract` 字段。字段名与内部切片对不上时按语义匹配回填，
+**仍为空才留 `null`**，并在 `uncertainty.inferred_fields` 里逐项说明是怎么推出来的。
 
 ## 最小调用示例
 

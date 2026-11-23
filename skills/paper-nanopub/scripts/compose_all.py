@@ -528,15 +528,28 @@ def detect_genre(task: str, title: str) -> str:
 # 7. references
 # --------------------------------------------------------------------------- #
 def parse_ref_entry(text: str) -> Dict[str, Any]:
+    """Split one reference line into the four fields a citation style needs.
+
+    Reference lines arrive in wildly different shapes ("[3] A. Author, B. Author.
+    Title. Venue, 2020." / "Author (2020). Title. Journal.").  The author list is
+    the part before the first sentence break that does not already contain a
+    year, which keeps venue/year out of the `author` field; everything else is
+    left empty rather than guessed.
+    """
     year = re.search(r"\b(19|20)\d{2}[a-z]?\b", text)
     doi = re.search(r"10\.\d{4,9}/[^\s,;]+", text)
-    authors = text.split("(")[0].strip(" .,")
+    body = re.sub(r"^\s*\[\d{1,3}\]\s*", "", text).strip()
+    head = body.split(".")[0].strip(" .,")
+    if 5 <= len(head) <= 180 and not re.search(r"\b(19|20)\d{2}\b", head):
+        authors = head
+    else:
+        authors = body.split("(")[0].strip(" .,")
     title = ""
     m = re.search(r"[\"“](.+?)[\"”]", text)
     if m:
         title = m.group(1)
     else:
-        parts = [p.strip() for p in text.split(".") if len(p.strip()) > 12]
+        parts = [p.strip() for p in body.split(".") if len(p.strip()) > 12]
         if len(parts) >= 2:
             title = parts[1][:180]
     return {
@@ -588,6 +601,20 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     def apa(e):
         return f"{e['authors']} ({e['year']}). {e['title']}."
 
+    def bkey(e):
+        """A stable, readable BibTeX key: familyname + year + first long word."""
+        first = (e["authors"] or "anon").split(",")[0].split()
+        fam = re.sub(r"[^A-Za-z]", "", first[-1]) if first else "anon"
+        word = next((w.lower() for w in re.findall(r"[A-Za-z]{4,}", e["title"] or "")), "")
+        return (fam.lower() or "anon") + (e["year"] or "nd") + word
+
+    def bibtex(e):
+        fields = [("author", e["authors"]), ("title", e["title"]), ("year", e["year"])]
+        if e["doi"]:
+            fields.append(("doi", e["doi"]))
+        body = ",\n  ".join(f"{k} = {{{v}}}" for k, v in fields if v)
+        return "@article{%s,\n  %s\n}" % (bkey(e), body)
+
     payload = {
         "entries": entries,
         "in_text_citations": {k: v[:5] for k, v in sorted(cited.items(), key=lambda kv: int(kv[0]))},
@@ -599,7 +626,9 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                                if str(i) not in entry_ns][:20],
         },
         "formatted": {"gb_t_7714": [gbt(e) for e in entries[:40]],
-                      "apa": [apa(e) for e in entries[:40]]},
+                      "apa": [apa(e) for e in entries[:40]],
+                      "bibtex": [bibtex(e) for e in entries[:40]]},
+        "bibtex_text": "\n\n".join(bibtex(e) for e in entries[:40]),
         "stats": {"entries": len(entries), "cited_keys": len(cited)},
     }
     status = "complete" if entries else "partial"
