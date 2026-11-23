@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import tempfile
 from typing import Any, Dict, List
 
 from . import backends, layout, sources, structure
@@ -99,13 +101,21 @@ def _unreadable(pdf_path: str, extracted: Dict[str, Any]) -> Dict[str, Any]:
             "backend": extracted.get("backend", "none"),
             "attempts": extracted.get("attempts", []),
             "ocr_pages": [], "has_text_layer": False, "error": info,
+            "encrypted": bool(info.get("encrypted")), "decryption": "",
+            "decrypted": False,
         },
         "meta": {"title": "", "authors": [], "abstract": "", "keywords": [], "doi": ""},
         "sections": [], "blocks": [], "tables": [], "figures": [], "formulas": [],
-        "references": [], "page_stats": [], "running_heads_removed": 0,
+        "references": [], "page_stats": [], "running_heads_removed": 0, "header_footer": [],
+        "verbatim_text": "", "verbatim_chars": 0,
+        "verbatim": {"chars_in_layer": 0, "chars_in_blocks": 0, "chars_in_header_footer": 0,
+                     "matched": 0, "ratio": 0.0, "missing": 0, "extra": 0,
+                     "hyphen_merged_blocks": 0, "sample_missing": "", "sample_extra": ""},
         "quality": {"pages": info.get("pages") or 0, "chars": 0, "chars_per_page": 0.0,
                     "blocks": 0, "tables": 0, "formulas": 0, "references": 0,
                     "empty_pages": [],
+                    "verbatim": {"ratio": 0.0, "missing": 0, "extra": 0,
+                                 "hyphen_merged_blocks": 0},
                     "issues": [f"{info.get('kind')}: {info.get('detail')}"]},
     }
 
@@ -140,6 +150,12 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
         layout.order_page(p)
 
     blocks = layout.build_blocks(pages, body)
+    # Every block says which engine produced it: a page that needed OCR is not
+    # the same evidence as a born-digital text layer, and a reviewer cannot
+    # tell them apart from `bbox` alone.
+    page_engine = {p["number"]: (p.get("filled_by") or extracted["backend"]) for p in pages}
+    for b in blocks:
+        b.setdefault("engine", page_engine.get(b["page"], extracted["backend"]))
     sections, blocks = structure.build_sections(blocks, body)
 
     raw_tables = backends.tables(pdf_path)
@@ -160,7 +176,7 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
     structure.attach_captions(blocks, tables, figures)
     figures, figures_dropped = structure.prune_figures(figures)
     table_region_blocks = structure.mark_table_blocks(blocks, tables)
-    image_tables = find_image_tables(pages, blocks, tables)
+    image_tables = find_image_tables(pages, blocks, tables, pdf_path=pdf_path)
 
     formulas = structure.find_formulas(blocks)
     references = structure.find_references(blocks)
@@ -182,6 +198,16 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
             "attempts": extracted.get("attempts", []),
             "ocr_pages": ocr_done,
             "has_text_layer": len(empty_pages) < max(1, len(pages) // 2),
+            # A permissions-locked PDF (owner password, empty user password) is
+            # readable; saying so keeps "encrypted" from being read as "failed".
+            "encrypted": bool(extracted.get("encryption")
+                              or extracted.get("decrypted_with")),
+            "decryption": extracted.get("encryption")
+                          or (f"password {extracted['decrypted_with']}"
+                              if extracted.get("decrypted_with") else ""),
+            "decrypted": bool(extracted.get("encryption")
+                              or extracted.get("decrypted_with"))
+                          and sum(p["chars"] for p in pages) > 0,
         },
         "meta": meta,
         "sections": sections,
@@ -197,16 +223,73 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
         "page_stats": [{"page": p["number"], "chars": p["chars"], "lines": len(p["lines"]),
                         "w": p.get("width"), "h": p.get("height"),
                         "columns": p.get("columns", 1), "bands": p.get("bands", 1),
-                        "gutters": p.get("gutters", []), "filled_by": p.get("filled_by")}
+                        "gutters": p.get("gutters", []), "filled_by": p.get("filled_by"),
+                        "order_rule": p.get("order_rule", "naive-y")}
                        for p in pages],
         "running_heads_removed": heads["count"],
+        # every dropped running head / page number / stamp, with its bbox:/n        # marking instead of silently deleting is what makes the verbatim
+        # claim checkable
+        "header_footer": heads.get("removed", []),
         "verbatim_text": verbatim,
         "verbatim_chars": len(verbatim),
+        # What the untouched layer had vs. what the blocks carry.  This is the
+        # "逐字一致" number, computed here so it also ships in coverage.json;
+        # verify.py --pdf recomputes it from the PDF itself.
+        "verbatim": _verbatim_ledger(verbatim, blocks, heads.get("removed") or []),
         "quality": _quality(pages, blocks, tables, formulas, references, empty_pages,
                             figures, figures_dropped, table_region_blocks,
                             garbled, order, image_tables),
     }
+    # Surface the ledger where a reviewer looks first (coverage.json), not only
+    # in the full doc.json.
+    v = doc["verbatim"]
+    doc["quality"]["verbatim"] = {"ratio": v["ratio"], "missing": v["missing"],
+                                  "extra": v["extra"],
+                                  "hyphen_merged_blocks": v["hyphen_merged_blocks"]}
+    if v["ratio"] < 0.995 or v["extra"] > max(20, v["chars_in_blocks"] * 0.002):
+        doc["quality"]["issues"].append(
+            f"verbatim ledger: {v['missing']} char(s) in the text layer are not in the "
+            f"blocks, {v['extra']} char(s) in the blocks are not in the layer "
+            f"(coverage {v['ratio']:.3f}); see doc.json verbatim")
     return doc
+
+
+def _verbatim_ledger(raw: str, blocks: List[Dict[str, Any]],
+                     removed: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Character-multiset audit: the raw layer vs. what the blocks deliver.
+
+    `missing` is text the PDF had and the deliverable lost; `extra` is text the
+    deliverable invented.  Running heads are counted as *explained* removals
+    (they are listed in `header_footer`), ligature expansion and line-break
+    hyphens are expected single-character transforms.  On a born-digital paper
+    both numbers should be tiny; a large `missing` means the cleaner ate text.
+    """
+    from collections import Counter
+
+    def pack(s: str) -> Counter:
+        for k, v in layout.LIGATURES.items():
+            s = s.replace(k, v)
+        return Counter(c for c in s if not c.isspace())
+
+    layer = pack(raw)
+    body = pack("".join(b.get("text_raw") or b.get("text") or "" for b in blocks))
+    heads = pack("".join(h.get("text") or "" for h in removed))
+    kept = layer & (body + heads)
+    missing = layer - body - heads
+    extra = body - layer
+    total = sum(layer.values()) or 1
+    return {
+        "chars_in_layer": sum(layer.values()),
+        "chars_in_blocks": sum(body.values()),
+        "chars_in_header_footer": sum(heads.values()),
+        "matched": sum(kept.values()),
+        "ratio": round(sum(kept.values()) / total, 4),
+        "missing": sum(missing.values()),
+        "extra": sum(extra.values()),
+        "hyphen_merged_blocks": sum(1 for b in blocks if b.get("hyphen_merged")),
+        "sample_missing": "".join(c for c, _ in missing.most_common(12)),
+        "sample_extra": "".join(c for c, _ in extra.most_common(12)),
+    }
 
 
 def _quality(pages, blocks, tables, formulas, references, empty_pages,
@@ -328,7 +411,8 @@ def _vgap(a: List[float], b: List[float]) -> float:
 
 
 def find_image_tables(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]],
-                      tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                      tables: List[Dict[str, Any]],
+                      pdf_path: str = "") -> List[Dict[str, Any]]:
     """Tables that exist only as a picture.
 
     A `Table N` caption with no extracted table beside it means the table is an
@@ -349,8 +433,69 @@ def find_image_tables(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]],
             near = [img for img in p["images"] if _vgap(img, b["bbox"]) < 220]
             if near:
                 out.append({"page": p["number"], "caption": b["text"][:160],
-                            "caption_block": b.get("id"), "image_bbox": near[0]})
+                            "caption_block": b.get("id"), "image_bbox": near[0],
+                            "ocr_text": "", "ocr_engine": "",
+                            "note": "table exists only as an image; no text layer to read"})
+    if out:
+        # If an OCR engine happens to be installed, try the crop.  Without one the
+        # entry stays as a marker, which is the honest outcome -- the alternative
+        # is reporting "no tables", which is worse than reporting "a table I
+        # could not read".
+        engine = _ocr_engine()
+        for item in out:
+            item["ocr_engine"] = engine or ""
+            if engine:
+                item["ocr_text"] = _ocr_region(pdf_path, item)
+            item["note"] = ("table exists only as an image; OCR text below is approximate"
+                            if item["ocr_text"] else
+                            "table exists only as an image; no OCR engine available")
     return out
+
+
+def _ocr_engine() -> str:
+    for name in ("tesseract",):
+        try:
+            import shutil
+            if shutil.which(name):
+                return name
+        except Exception:
+            pass
+    try:
+        import pytesseract  # type: ignore  # noqa: F401
+        return "pytesseract"
+    except Exception:
+        return ""
+
+
+def _ocr_region(pdf_path: str, item: Dict[str, Any]) -> str:
+    """OCR one image region. Any failure returns "" rather than raising."""
+    try:
+        import fitz  # type: ignore
+    except Exception:
+        return ""
+    try:
+        if not pdf_path or not os.path.exists(pdf_path):
+            return ""
+        doc = fitz.open(pdf_path)
+        src = doc.load_page(int(item["page"]) - 1)
+        clip = fitz.Rect(item["image_bbox"])
+        pix = src.get_pixmap(clip=clip, dpi=200)
+        tmp = os.path.join(tempfile.gettempdir(), f"imgtable-{item['page']}.png")
+        pix.save(tmp)
+        if item["ocr_engine"] == "tesseract":
+            out = subprocess.run(["tesseract", tmp, "stdout", "--psm", "6"],
+                                 capture_output=True, text=True, timeout=60)
+            return (out.stdout or "").strip()[:4000]
+        import pytesseract  # type: ignore
+        from PIL import Image  # type: ignore
+        return (pytesseract.image_to_string(Image.open(tmp)) or "").strip()[:4000]
+    except Exception:
+        return ""
+    finally:
+        try:
+            doc.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
 
 
 def analyze(input_dir: str, ocr: bool = True) -> Dict[str, Any]:

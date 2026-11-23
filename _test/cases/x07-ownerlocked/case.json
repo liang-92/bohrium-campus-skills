@@ -1,0 +1,15 @@
+{
+  "case_id": "self-ex-ownerlocked",
+  "topic": "阅读01 文献文档解析",
+  "note": "自建异常用例：只有 owner 口令、user 口令为空（权限锁定）的 PDF；应空口令解密后正常解析，而不是判 unable。",
+  "output_contract": {
+    "document": "title/authors/abstract/pages/engine",
+    "structure": "section tree",
+    "content.blocks": "list with page + block id",
+    "content.tables": "caption/header/rows",
+    "content.formulas": "number/text/block",
+    "content.references": "n/text/page",
+    "coverage": "per-page chars, empty pages, issues",
+    "status": "complete|partial|unable"
+  }
+}

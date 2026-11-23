@@ -48,6 +48,20 @@ def _extract_fitz(path: str) -> Dict[str, Any] | None:
     except Exception:
         return None
     doc = fitz.open(path)
+    # Owner-password-only PDFs (permissions locked, text still readable) are
+    # common; try the empty password before declaring the file unreadable.
+    decrypted_with = ""
+    if getattr(doc, "needs_pass", False):
+        for pw in ("", "owner", "user", "password"):
+            try:
+                if doc.authenticate(pw):
+                    decrypted_with = pw or "<empty>"
+                    break
+            except Exception:
+                continue
+        else:
+            doc.close()
+            return None
     pages: List[Dict[str, Any]] = []
     try:
         for pno in range(doc.page_count):
@@ -106,7 +120,19 @@ def _extract_fitz(path: str) -> Dict[str, Any] | None:
             })
     finally:
         doc.close()
-    return {"backend": _fitz_version() or "pymupdf", "pages": pages}
+    out = {"backend": _fitz_version() or "pymupdf", "pages": pages}
+    if decrypted_with:
+        out["decrypted_with"] = decrypted_with
+    # An owner-password PDF opens without a prompt, so `needs_pass` is false and
+    # the file would look unencrypted.  The metadata still names the cipher,
+    # which is what makes "encrypted but readable" reportable.
+    try:
+        enc = (doc.metadata or {}).get("encryption")
+    except Exception:
+        enc = None
+    if enc:
+        out["encryption"] = str(enc)
+    return out
 
 
 def _lines_in(page, box) -> List[Dict[str, Any]]:
@@ -270,6 +296,35 @@ def _engine_rows(page, t) -> List[List[str]]:
     return rows if any(any(c for c in r) for r in rows) else []
 
 
+TABLE_HINT = re.compile(r"(?:^|[\s(])(?:table|tab\.|表)\s*[\divxlc]+", re.I)
+
+def _page_has_table_hint(page) -> bool:
+    """Cheap gate: does this page even look like it has a table?
+
+    PyMuPDF 2.x runs an ONNX layout model inside `find_tables`, which costs
+    seconds per page.  Calling it on every page of a 15-page paper is most of
+    the runtime, and pages with neither a `Table N` caption nor a horizontal
+    rule essentially never carry a table.  Skipped pages still go through the
+    text-line fallback downstream.
+    """
+    try:
+        if TABLE_HINT.search(page.get_text("text") or ""):
+            return True
+    except Exception:
+        pass
+    try:
+        width = float(page.rect.width)
+        for d in page.get_drawings():
+            r = d.get("rect")
+            if r is None:
+                continue
+            if r.width > width * 0.4 and r.height < 3.0:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _fitz_tables(path: str, pages: List[int] | None = None) -> List[Dict[str, Any]]:
     try:
         import fitz  # type: ignore
@@ -286,6 +341,8 @@ def _fitz_tables(path: str, pages: List[int] | None = None) -> List[Dict[str, An
             if wanted and (pno + 1) not in wanted:
                 continue
             page = doc.load_page(pno)
+            if not _page_has_table_hint(page):
+                continue
             try:
                 # Borderless academic tables line their columns up by text, not
                 # by rules.  `strategy="text"` finds those columns (13 instead of
@@ -402,6 +459,12 @@ def _extract_pypdf(path: str) -> Dict[str, Any] | None:
         reader = PdfReader(path)
     except Exception:
         return None
+    if getattr(reader, "is_encrypted", False):
+        try:
+            if int(reader.decrypt("")) == 0:      # empty password did not work
+                return None
+        except Exception:
+            return None
     pages: List[Dict[str, Any]] = []
     for pno, page in enumerate(reader.pages, 1):
         try:

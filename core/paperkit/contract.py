@@ -242,6 +242,21 @@ DESC_HINTS: List[Tuple[str, Tuple[str, ...]]] = [
     ("blocks", ("full text", "text block", "body text", "正文", "全文")),
 ]
 
+# A declared *shape* is a stronger signal than a declared name: if the contract
+# says its items carry `cells`/`header`/`rows`, it is asking for a table no
+# matter what the field is called.  These are the contract's own schema words,
+# not a vocabulary we invented for a challenge -- read at run time from
+# `case.json`'s `items`/`example`.
+SHAPE_HINTS: List[Tuple[Tuple[str, ...], str]] = [
+    (("cells", "header"), "tables"),
+    (("cells", "rows"), "tables"),
+    (("n_rows", "n_cols"), "tables"),
+    (("markdown", "header"), "tables"),
+    (("level", "title", "page"), "structure"),
+    (("quote", "block"), "evidence"),
+    (("term", "zh"), "glossary"),
+]
+
 LISTISH = re.compile(r"(s$|_list$|list$|items?$|entries$|pairs?$|rows?$|records?$"
                      r"|数组|列表|清单|明细)", re.I)
 
@@ -429,6 +444,15 @@ def resolve(f: Field, bag: Dict[str, Any], payload: Dict[str, Any]) -> Resolutio
     if key in bag and bag[key] is not None:
         v, ok = _coerce(bag[key], f.kind)
         return Resolution(v, "slice", 0.95, ok)
+
+    # (b1) the contract's own item schema names the fields we produce
+    # ("cells"+"header" -> a table, whatever the field is called)
+    if isinstance(f.items, dict) and f.items:
+        keys = {str(k).lower() for k in f.items}
+        for need, slice_name in SHAPE_HINTS:
+            if len(keys & set(need)) >= 2 and bag.get(slice_name) not in (None, "", [], {}):
+                v, ok = _coerce(bag[slice_name], f.kind)
+                return Resolution(v, f"items-shape:{slice_name}", 0.85, ok)
 
     # (c) ordinary document noun -> slice
     target = ALIASES.get(key)

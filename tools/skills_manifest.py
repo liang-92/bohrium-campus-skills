@@ -68,6 +68,15 @@ SKILLS = [
    （√→`\\sqrt{}`、希腊字母/上下标映射、`&%$#_{}` 转义），丢字符数记进 `tex_dropped_chars`，
    含非 ASCII 无法映射时 `tex_confidence: low`——让下游能判断“这条公式能不能直接用”。
 9. **证据粒度**：每个块得到 `p03-b012` 这样的稳定 id，页码、栏号、bbox、章节路径一并保留。""",
+        "bench": """| 用例 | base（纯文本转储） | skill | delta |
+|---|---|---|---|
+| `p01-parse-single`：单栏，含表格 / 公式 / 参考文献 | 18.0 | 100.0 | +82.0 |
+| `p02-parse-twocol`：右栏先写进内容流 | 0.0 | 100.0 | +100.0 |
+| 均值 | 9.0 | 100.0 | +91.0 |
+
+单栏那行看结构抽取（作者、章节、表格 5×6、公式、4 条参考文献）；
+双栏那行看阅读顺序——base 的输出里 `3.2 Decoder` 排在 `3.1 Encoder` 之前，
+就是「按内容流顺序串栏」的典型错误。两行用同一个打分器、同一份 `gold.json`。""",
         "output": """`result.json` 主要字段：
 
 | 字段 | 内容 |
@@ -301,6 +310,12 @@ python3 scripts/run.py --input /input --out /app/output --profile nanopub
    并在 `notes` 说明“图太稀疏，关系句不足”——不拿 3 条边冒充知识图谱。
 5. **查询**：按关系类型各给一组示例查询及答案子图，并显式列出“无法确定的关系”。
 6. **导出**：JSON（nodes/edges）+ Cypher `MERGE` 语句，便于导入 Neo4j。""",
+        "bench": """| 用例 | base（纯文本转储） | skill | delta |
+|---|---|---|---|
+| `p06-kg`：实体与关系图 | 0.0 | 90.0 | +90.0 |
+
+base 只有一段纯文本，给不出节点/边，也拿不到证据；skill 三个必须实体
+（`fairseq`、`WMT 2014`、`BLEU`）全部进图且各带原句。""",
         "output": """| 字段 | 内容 |
 |---|---|
 | `nodes[]` | id、label、type、evidence（block/page/section）|
@@ -409,6 +424,18 @@ python3 scripts/run.py --input /input --out /app/output --profile polish
    `booktitle` 与 `journal` 不混用。BibTeX citation key 由「第一作者姓氏 + 年份 + 标题首个实词」生成，稳定可复现。
    字段缺失处留空而不是编造。
 6. **可疑条目**：无年份、无 venue、标题异常、DOI 形态不合法，单独列出待人工核验。""",
+        "bench": """| 用例 | base（纯文本转储） | skill | delta |
+|---|---|---|---|
+| `p08-refs`：4 条条目，其中 `[5]` 缺条目、`[4]` 未被引、`[2]`/`[4]` 重复 | 0.0 | 90.0 | +90.0 |
+
+base 拿到的是一段纯文本，无法给出条目、缺失/未引用/重复三张问题清单，也排不出
+GB/T 7714 与 BibTeX；skill 在这三项上与 `gold.json` 完全一致。""",
+        "bench": """| 用例 | base（纯文本转储） | skill | delta |
+|---|---|---|---|
+| `p08-refs`：4 条条目，其中 `[5]` 缺条目、`[4]` 未被引、`[2]`/`[4]` 重复 | 0.0 | 90.0 | +90.0 |
+
+base 拿到的是一段纯文本，无法给出条目、缺失/未引用/重复三张问题清单，也排不出
+GB/T 7714 与 BibTeX；skill 在这三项上与 `gold.json` 完全一致。""",
         "output": """| 字段 | 内容 |
 |---|---|
 | `entries[]` | n、authors、year、title、venue、volume、issue、pages、type、doi、page、block |

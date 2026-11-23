@@ -89,7 +89,9 @@ def run_one(slug: str, case_dir: str) -> dict:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     res = load(os.path.join(out, "result.json"))
     pay = load(os.path.join(out, "payload.json"))
+    doc = load(os.path.join(out, "doc.json"))
     return {"slug": slug, "case": os.path.basename(case_dir), "out": out,
+            "doc": doc,
             "rc": proc.returncode, "stderr": (proc.stderr or "")[-600:],
             "result": res, "payload": pay, "seconds": round(time.time() - t0, 1),
             "has_result": os.path.exists(os.path.join(out, "result.json"))}
@@ -124,6 +126,14 @@ def check(gold: dict, run: dict) -> list[tuple[str, bool, str]]:
     if gold.get("must_not_have_text"):
         body = flat_text(oc.get("content") or {})
         add("未编造正文", "Sparse Routing" not in body)
+    if gold.get("must_have_text"):
+        body = flat_text(oc.get("document") or {})
+        add("读到了正文", len(body) > 80, f"{len(body)} chars")
+    if gold.get("expect_decrypted"):
+        src = ((run.get("doc") or {}).get("document") or {}).get("source") or {}
+        add("加密但可读", bool(src.get("encrypted")) and bool(src.get("decrypted")),
+            f"encrypted={src.get('encrypted')} decrypted={src.get('decrypted')} "
+            f"cipher={src.get('decryption')!r}")
 
     if "pages" in gold:
         got = (oc.get("document") or {}).get("pages")
@@ -244,6 +254,14 @@ def check(gold: dict, run: dict) -> list[tuple[str, bool, str]]:
         body = json.dumps(segs, ensure_ascii=False)
         miss = [p for p in gold["protected_examples"] if p not in body]
         add("保护令牌", not miss, f"missing={miss}")
+
+    if gold.get("expect_image_table"):
+        cov = dig(oc, "coverage") or {}
+        content = (pay.get("content") or {}) if isinstance(pay.get("content"), dict) else {}
+        imgs = content.get("image_tables") or dig(pay, "image_tables") or []
+        body = json.dumps(imgs, ensure_ascii=False)
+        noted = "image" in json.dumps(cov, ensure_ascii=False).lower()
+        add("图片型表格标记", bool(imgs) and noted, body[:140])
 
     if "expect_ocr_or_unable" in gold:
         cov = dig(oc, "coverage") or {}

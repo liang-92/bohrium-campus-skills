@@ -10,6 +10,7 @@ _test2*/
 !_test/cases/
 _test/cases/_out/
 _test/cases/_matrix/
+_test/cases/_base_vs_skill/
 _test/cases/_build_*
 _test/cases/*/paper.pdf
 _test/cases/report.json

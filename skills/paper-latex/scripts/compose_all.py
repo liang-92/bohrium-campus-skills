@@ -164,7 +164,13 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         "structure": [{"level": s["level"], "title": s["title"], "page": s["page"], "block": s["block"]}
                       for s in d["sections"]],
         "content": {"blocks": blocks, "tables": d["tables"], "figures": d["figures"],
-                    "formulas": d["formulas"], "references": d["references"]},
+                    "formulas": d["formulas"], "references": d["references"],
+                    # headers/footers are marked, not silently deleted: the text,
+                    # page and bbox of every dropped line stay here
+                    "header_footer": d.get("header_footer", []),
+                    # a `Table N` caption with no extractable rows means the table
+                    # is a picture; report the marker instead of "no tables"
+                    "image_tables": d.get("image_tables", [])},
         "coverage": d["quality"],
         "page_map": d["page_stats"],
         "verbatim": {"file": "raw_text.txt", "chars": d.get("verbatim_chars"),
@@ -174,6 +180,10 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     status = "complete" if d["blocks"] and d["quality"]["chars_per_page"] > 200 else "partial"
     notes = [f"reading order reconstructed with XY-cut; {d['quality']['tables']} tables, "
              f"{d['quality']['formulas']} formulas, {d['quality']['references']} references"]
+    dropped = len(d.get("header_footer") or [])
+    if dropped:
+        notes.append(f"{dropped} running head/footer lines were moved to content.header_footer[] "
+                     f"with their bbox, not deleted from the record")
     if d["source"]["ocr_pages"]:
         notes.append(f"OCR used on pages {d['source']['ocr_pages']}")
     return payload, evidence, {"notes": d["quality"]["issues"], "missing": []}, status, notes

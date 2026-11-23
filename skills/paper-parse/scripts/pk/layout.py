@@ -96,14 +96,18 @@ def strip_running_heads(pages: List[Dict[str, Any]]) -> Dict[str, Any]:
             stamp = any(rx.match(ln["text"]) for rx in BOILERPLATE)
             is_footer = stamp or vertical or (in_margin and (key in repeated or PAGE_NUMBER.match(ln["text"])))
             if is_footer:
+                # the line is taken out of the flow but never thrown away: text,
+                # page and bbox all survive in header_footer[], so "the header is
+                # gone" is a claim a reader can check against the PDF
                 removed.append({"page": p["number"], "text": ln["text"].strip(),
+                                "bbox": [round(float(v), 1) for v in ln["bbox"]],
                                 "why": "stamp" if stamp else ("rotated" if vertical else
                                                              ("page-number" if PAGE_NUMBER.match(ln["text"])
                                                               else "repeated-margin"))})
             else:
                 keep.append(ln)
         p["lines"] = keep
-    return {"removed": removed[:400], "count": len(removed)}
+    return {"removed": removed[:800], "count": len(removed)}
 
 
 def find_gutters(page: Dict[str, Any]) -> List[Tuple[float, float]]:
@@ -319,6 +323,14 @@ def _pitch(lines: List[Dict[str, Any]], edges) -> float:
     return gaps[len(gaps) // 2]
 
 
+# A caption is its own paragraph.  Without this guard a caption sitting directly
+# under a paragraph gets merged into it, and then nothing can attribute it to the
+# table or figure it belongs to -- which is exactly how an image-only table ends
+# up reported as "no tables".
+CAPTION_START = re.compile(r"^\s*(table|tab\.|figure|fig\.|algorithm|listing|scheme)\s*"
+                           r"[\dIVXLC]+\s*[:.\uff1a]", re.I)
+
+
 def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str, Any]]:
     """Group ordered lines into paragraph-level blocks with stable ids."""
     blocks: List[Dict[str, Any]] = []
@@ -330,7 +342,7 @@ def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str
         current: List[Dict[str, Any]] = []
         counter = 0
 
-        def flush(reason: str = "page-start"):
+        def flush(reason: str = "page-start", at: Dict[str, Any] | None = None):
             nonlocal current, counter
             if not current:
                 return
@@ -356,9 +368,17 @@ def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str
                 "bold": any(l.get("bold") for l in current),
                 "lines": len(current),
                 # Decision evidence: why this block starts where it does.
+                # `break_reason` is kept for older readers; `para_break_reason`
+                # is the name the review asked for, same value.
                 "order_rule": p.get("order_rule", "naive-y"),
                 "columns_on_page": p.get("columns", 1),
                 "break_reason": reason,
+                "para_break_reason": reason,
+                # The exact line pair that caused the break.  Without it the
+                # reason string is a claim; with it, the two y coordinates can
+                # be re-measured on the page.
+                "break_at": at or {},
+                "hyphen_merged": False,
             })
             current = []
 
@@ -377,7 +397,9 @@ def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str
             short_prev = prev["bbox"][2] < right - max(10.0, size_prev * 2.2)
             big_block = len(current) >= 12 or sum(len(l["text"]) for l in current) > 1200
             reason = ""
-            if gap > gap_limit:
+            if CAPTION_START.match(clean_text(ln["text"])):
+                reason = "caption-start"
+            elif gap > gap_limit:
                 reason = f"vertical-gap {gap:.1f}pt > {gap_limit:.1f}pt"
             elif short_prev:
                 reason = "short-line (paragraph end)"
@@ -390,7 +412,9 @@ def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str
             if not reason:
                 current.append(ln)
             else:
-                flush(reason)
+                flush(reason, {"prev_line_bottom": round(prev["bbox"][3], 1),
+                               "next_line_top": round(ln["bbox"][1], 1),
+                               "gap_pt": round(gap, 1)})
                 current = [ln]
         flush("page-start")
     return _merge_hyphen_continuations(blocks)
@@ -407,9 +431,15 @@ def _merge_hyphen_continuations(blocks: List[Dict[str, Any]]) -> List[Dict[str, 
             cont = (tail.endswith(("-", "\u2010", "\u2011")) and head[:1].islower()
                     and prev["page"] == b["page"])
             if cont:
-                prev["text"] = tail[:-1] + head
+                kept = tail[:-1]
+                prev["text"] = kept + head
                 prev["text_raw"] = prev.get("text_raw", tail) + "\n" + b.get("text_raw", head)
                 prev["hyphen_merged"] = True
+                # The two halves, so a reviewer can see which real hyphen the
+                # merge removed: `state-of-the-` + `art` -> `state-of-theart`
+                # would be wrong, and this pair is what exposes it.
+                prev["hyphen_pair"] = [kept.split()[-1][-14:] if kept.split() else "",
+                                       (head.split() or [""])[0][:14]]
                 prev["lines"] += b.get("lines", 0)
                 prev["bbox"] = [min(prev["bbox"][0], b["bbox"][0]), min(prev["bbox"][1], b["bbox"][1]),
                                 max(prev["bbox"][2], b["bbox"][2]), max(prev["bbox"][3], b["bbox"][3])]

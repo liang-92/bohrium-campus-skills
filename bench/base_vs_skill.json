@@ -1,0 +1,361 @@
+{
+  "cases": [
+    {
+      "case": "p01-parse-single",
+      "skill": {
+        "完整度": 100.0,
+        "正确性": 100.0,
+        "可核验": 100.0,
+        "总分": 100.0
+      },
+      "items": [
+        {
+          "item": "页数",
+          "base": {
+            "ok": true,
+            "detail": "3"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "3"
+          }
+        },
+        {
+          "item": "作者",
+          "base": {
+            "ok": false,
+            "detail": "0/4"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "4/4"
+          }
+        },
+        {
+          "item": "标题",
+          "base": {
+            "ok": false,
+            "detail": "SYNTHETIC TEST DOCUMENT - generated for "
+          },
+          "skill": {
+            "ok": true,
+            "detail": "Sparse Routing for Low-Resource Neural M"
+          }
+        },
+        {
+          "item": "章节",
+          "base": {
+            "ok": false,
+            "detail": "0/5"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "5/5"
+          }
+        },
+        {
+          "item": "表格",
+          "base": {
+            "ok": false,
+            "detail": "0 张"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "1 张"
+          }
+        },
+        {
+          "item": "公式",
+          "base": {
+            "ok": false,
+            "detail": "0 条"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "1 条"
+          }
+        },
+        {
+          "item": "参考文献",
+          "base": {
+            "ok": false,
+            "detail": "0 条"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "4 条"
+          }
+        },
+        {
+          "item": "实体",
+          "base": {
+            "ok": true,
+            "detail": "3/3"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "3/3"
+          }
+        },
+        {
+          "item": "块锚点",
+          "base": {
+            "ok": false,
+            "detail": "0/3"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "39/39"
+          }
+        },
+        {
+          "item": "证据",
+          "base": {
+            "ok": false,
+            "detail": "0 条"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "13 条"
+          }
+        }
+      ],
+      "base": {
+        "完整度": 20.0,
+        "正确性": 25.0,
+        "可核验": 0.0,
+        "总分": 18.0
+      },
+      "delta": {
+        "完整度": 80.0,
+        "正确性": 75.0,
+        "可核验": 100.0,
+        "总分": 82.0
+      }
+    },
+    {
+      "case": "p02-parse-twocol",
+      "skill": {
+        "完整度": 100.0,
+        "正确性": 100.0,
+        "可核验": 100.0,
+        "总分": 100.0
+      },
+      "items": [
+        {
+          "item": "阅读顺序",
+          "base": {
+            "ok": false,
+            "detail": "OK→OK"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "OK→OK"
+          }
+        },
+        {
+          "item": "块锚点",
+          "base": {
+            "ok": false,
+            "detail": "0/1"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "16/16"
+          }
+        },
+        {
+          "item": "证据",
+          "base": {
+            "ok": false,
+            "detail": "0 条"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "12 条"
+          }
+        }
+      ],
+      "base": {
+        "完整度": 0.0,
+        "正确性": 0.0,
+        "可核验": 0.0,
+        "总分": 0.0
+      },
+      "delta": {
+        "完整度": 100.0,
+        "正确性": 100.0,
+        "可核验": 100.0,
+        "总分": 100.0
+      }
+    },
+    {
+      "case": "p08-refs",
+      "skill": {
+        "完整度": 100.0,
+        "正确性": 100.0,
+        "可核验": 50.0,
+        "总分": 90.0
+      },
+      "items": [
+        {
+          "item": "参考文献",
+          "base": {
+            "ok": false,
+            "detail": "0 条"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "4 条"
+          }
+        },
+        {
+          "item": "缺失条目",
+          "base": {
+            "ok": false,
+            "detail": "[]"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "['5']"
+          }
+        },
+        {
+          "item": "未被引用",
+          "base": {
+            "ok": false,
+            "detail": "[]"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "['4']"
+          }
+        },
+        {
+          "item": "重复对",
+          "base": {
+            "ok": false,
+            "detail": "0 对"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "1 对"
+          }
+        },
+        {
+          "item": "GB/T 类型标记",
+          "base": {
+            "ok": false,
+            "detail": "0 条"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "4 条"
+          }
+        },
+        {
+          "item": "BibTeX 类型",
+          "base": {
+            "ok": false,
+            "detail": "0 条"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "4 条"
+          }
+        },
+        {
+          "item": "证据",
+          "base": {
+            "ok": false,
+            "detail": "0 条"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "4 条"
+          }
+        }
+      ],
+      "base": {
+        "完整度": 0.0,
+        "正确性": 0.0,
+        "可核验": 0.0,
+        "总分": 0.0
+      },
+      "delta": {
+        "完整度": 100.0,
+        "正确性": 100.0,
+        "可核验": 50.0,
+        "总分": 90.0
+      }
+    },
+    {
+      "case": "p06-kg",
+      "skill": {
+        "完整度": 100.0,
+        "正确性": 100.0,
+        "可核验": 50.0,
+        "总分": 90.0
+      },
+      "items": [
+        {
+          "item": "实体",
+          "base": {
+            "ok": false,
+            "detail": "0/3"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "3/3"
+          }
+        },
+        {
+          "item": "证据",
+          "base": {
+            "ok": false,
+            "detail": "0 条"
+          },
+          "skill": {
+            "ok": true,
+            "detail": "11 条"
+          }
+        }
+      ],
+      "base": {
+        "完整度": 0.0,
+        "正确性": 0.0,
+        "可核验": 0.0,
+        "总分": 0.0
+      },
+      "delta": {
+        "完整度": 100.0,
+        "正确性": 100.0,
+        "可核验": 50.0,
+        "总分": 90.0
+      }
+    }
+  ],
+  "aggregate": {
+    "完整度": {
+      "base": 5.0,
+      "skill": 100.0,
+      "delta": 95.0
+    },
+    "正确性": {
+      "base": 6.2,
+      "skill": 100.0,
+      "delta": 93.8
+    },
+    "可核验": {
+      "base": 0.0,
+      "skill": 75.0,
+      "delta": 75.0
+    },
+    "总分": {
+      "base": 4.5,
+      "skill": 95.0,
+      "delta": 90.5
+    }
+  },
+  "note": "base = engine text dump only; skill = the package output. Same scorer, same gold.json. Offline proxy, not a model run."
+}

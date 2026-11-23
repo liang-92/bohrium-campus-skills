@@ -89,8 +89,8 @@ python run_matrix.py          # 10 包 × 2 篇真实论文 + verify.py 回归
 
 | 项目 | 结果 |
 |---|---|
-| 自建用例 | **16/16 通过，32/32 断言** |
-| 异常用例 | 5/5 均为 `status=unable` 且写出 `result.json`（加密 / 整页图片 / 损坏 / 无 PDF / 零页） |
+| 自建用例 | **17/17 通过，34/34 断言** |
+| 异常用例 | 6/6 均为 `status=unable` 且写出 `result.json`（加密 / 整页图片 / 损坏 / 无 PDF / 零页 / 图片型表格） |
 | 十包 × 两篇真论文 | 20/20 成功，`verify.py` 全通过（translate 记 `pending`） |
 | 生成物 | `report.md` / `report.json` / `matrix.md` / `matrix.json` |
 

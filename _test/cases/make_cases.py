@@ -259,6 +259,44 @@ def make_twocol(path):
     doc.close()
 
 
+def make_imagetable(path):
+    """A page with a real text layer whose table is only a picture.
+
+    This is the case the audit called out: the page *has* text, so a pipeline
+    that only OCRs text-less pages will report "no tables" and never notice.
+    """
+    # draw the table on a scratch page, then paste it in as an image
+    scratch = pymupdf.open()
+    sp = scratch.new_page(width=460, height=120)
+    rows = [["Model", "BLEU", "Params", "Speed"],
+            ["Dense baseline", "24.1", "65M", "1.00x"],
+            ["Sparse top-2", "26.2", "118M", "1.44x"]]
+    cols = [10, 150, 230, 310]
+    for i, r in enumerate(rows):
+        for j, c in enumerate(r):
+            sp.insert_text((cols[j], 24 + i * 30), c, fontsize=11, fontname="helv")
+    for i in range(len(rows) + 1):
+        sp.draw_line((8, 10 + i * 30), (450, 10 + i * 30), width=0.8)
+    pix = sp.get_pixmap(dpi=170)
+    scratch.close()
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=W, height=H)
+    header(page)
+    y = 90
+    page.insert_text((LEFT, y), "Image-Only Table Probe", fontsize=16, fontname="helv")
+    y += 24
+    y = para(page, LEFT, y, "This page has a normal text layer. The table below it is a "
+                            "picture, so there is no text to extract from it.", RIGHT - LEFT) + 18
+    page.insert_text((LEFT, y), "Table 1: Quality on the low-resource subset (raster image).",
+                     fontsize=8.8, fontname="helv")
+    y += 14
+    page.insert_image(pymupdf.Rect(LEFT, y, RIGHT, y + 120), pixmap=pix)
+    footer(page, 1)
+    doc.save(path, deflate=True)
+    doc.close()
+
+
 # --------------------------------------------------------------------------- #
 # exception cases
 # --------------------------------------------------------------------------- #
@@ -266,6 +304,20 @@ def make_encrypted(src, dst):
     doc = pymupdf.open(src)
     doc.save(dst, encryption=pymupdf.PDF_ENCRYPT_AES_256,
              owner_pw="owner-secret", user_pw="user-secret",
+             permissions=pymupdf.PDF_PERM_PRINT)
+    doc.close()
+
+
+def make_owner_locked(src, dst):
+    """Encrypted but readable: owner password set, user password empty.
+
+    This is the common "permissions locked" PDF: a viewer opens it without
+    asking anything, while a library may still report `needs_pass`.  A pipeline
+    must try the empty password instead of declaring the file unreadable.
+    """
+    doc = pymupdf.open(src)
+    doc.save(dst, encryption=pymupdf.PDF_ENCRYPT_AES_256,
+             owner_pw="owner-secret", user_pw="",
              permissions=pymupdf.PDF_PERM_PRINT)
     doc.close()
 
@@ -488,6 +540,31 @@ def main():
 公式环境、thebibliography。若本机没有 TeX 引擎，请给出静态自检结果并说明未验证编译。""",
                gold_pdf, {"requires_files": ["main.tex"], "requires_static_check": True})
 
+    imgtable = os.path.join(HERE, "_build_imagetable.pdf")
+    make_imagetable(imgtable)
+    write_case("x06-imagetable", "self-ex-imagetable", "阅读01 文献文档解析",
+               "自建异常用例：页面有文字层，但表格本身是图片；应报 image_tables 并说明无 OCR 引擎，而不是「无表格」。",
+               CONTRACT_PARSE,
+               """### 异常：图片型表格
+
+本目录 `paper.pdf` 的第 1 页有正常文字层，但 `Table 1` 的内容是一张图片。
+请识别出「这里有一张表但读不到文字」，在 `image_tables` / `coverage.issues` 中说明，
+不要报告成「本文没有表格」。有 OCR 引擎时附上 OCR 文本并标注为近似结果。""",
+               imgtable, {"expect_image_table": True})
+
+    owner = os.path.join(HERE, "_build_ownerlocked.pdf")
+    make_owner_locked(gold_pdf, owner)
+    write_case("x07-ownerlocked", "self-ex-ownerlocked", "阅读01 文献文档解析",
+               "自建异常用例：只有 owner 口令、user 口令为空（权限锁定）的 PDF；应空口令解密后正常解析，而不是判 unable。",
+               CONTRACT_PARSE,
+               """### 异常：权限锁定（owner 口令 + 空 user 口令）
+
+本目录 `paper.pdf` 设置了 owner 口令，但 user 口令为空。普通阅读器打开不会提示输入口令。
+请尝试空口令解密并正常解析；在 `source` 中写明 `encrypted: true`、`decrypted: true`，
+不要把可读文件判成 unreadable。""",
+               owner, {"expect_status": ["complete"], "pages": 3,
+                       "must_have_text": True, "expect_decrypted": True})
+
     enc = os.path.join(HERE, "_build_encrypted.pdf")
     make_encrypted(gold_pdf, enc)
     write_case("x01-encrypted", "self-ex-encrypted", "阅读01 文献文档解析",
@@ -541,7 +618,7 @@ def main():
 本目录 `paper.pdf` 声明 0 页。请说明无可解析页面并输出 `status: unable`，不崩溃。""",
                zp, {"expect_status": ["unable"], "result_must_exist": True})
 
-    for tmp in (gold_pdf, twocol_pdf, enc, img, corrupt, zp):
+    for tmp in (gold_pdf, twocol_pdf, enc, img, corrupt, zp, imgtable):
         if os.path.exists(tmp):
             os.remove(tmp)
 

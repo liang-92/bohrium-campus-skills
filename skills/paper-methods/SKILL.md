@@ -107,13 +107,17 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 | `draft` | `status` + 4 段骨架 + `rules`（禁造数值） |
 | `run.fill` | `--fill` 后回填的段落数 |
 
-每个块同时留三样东西，方便复核而不是只能相信结论：
+每个块同时留四样东西，方便复核而不是只能相信结论：
 
 | 字段 | 用途 |
 |---|---|
 | `text` | 清洗后的可读文本（合并了行末连字符、去掉了页眉页脚） |
-| `raw_text.txt` | **引擎原始文字层**：未合并、未删除，可直接与 PDF 文本层逐字 diff |
-| `break_reason` / `order_rule` | 这一段为什么在这里断开、该页用的是 XY-cut 还是按 y 排序 |
+| `text_raw` | **该块对应的引擎原始行**：未合并、未删除，可与 PDF 文本层逐字 diff |
+| `raw_text.txt` | 全篇原始文字层快照，在清洗之前导出，用于整篇比对 |
+| `engine` | 这一块由哪个引擎读到（如 `pymupdf 1.24` / `ocr`），OCR 页与文字层页可区分 |
+| `order_rule` | 该页用 XY-cut 分栏，还是按 y 排序（`xy-cut` / `naive-y`） |
+| `para_break_reason` + `break_at` | 为什么在这里断开，以及触发断段的两行 y 坐标（可回放） |
+| `hyphen_merged` + `hyphen_pair` | 是否合并了行末连字符、被合并的两半是什么 |
 | `evidence[]` | 块 id + 页码 + 原文引句；`verify.py` 会回查引句是否真在该块里 |
 
 图表位置也在 `doc.json` 里，`doc.md` 末尾有一张速查表：
@@ -127,7 +131,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 | `tables[].rows` / `n_rows` / `n_cols` | 单元格内容与行列数，`in_table` 标出正文块属于哪张表 |
 | `image_tables[]` | 只有图片、没有文字层的表格：给出页码与图注，明确「单元格不在 `tables[]` 里，不要编造」|
 
-`coverage.json` 把四类异常单独记下来，而不是让它们影响正文而不留痕：
+`coverage.json` 把异常单独记下来，而不是让它们影响正文而不留痕：
 
 | 键 | 含义 |
 |---|---|
@@ -135,16 +139,8 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 | `garbled_text_layer.pages` | 字体缺 `toUnicode`、文字层是私用区码点的页；已尝试对这几页改走 OCR |
 | `image_tables` | 有 `Table N` 图注但区域内无文字层 → 表格是图片，未抽取 |
 | `figures_dropped` | 被判定为子图/装饰的块及理由 |
-| `image_tables[]` | 只有图片、没有文字层的表格：给出页码与图注，明确「单元格不在 `tables[]` 里，不要编造」|
-
-`coverage.json` 把四类异常单独记下来，而不是让它们影响正文而不留痕：
-
-| 键 | 含义 |
-|---|---|
-| `page_order.warning` | 页脚打印页码非单调/重复（重排过的 PDF），下游「见第 N 页」可能错位 |
-| `garbled_text_layer.pages` | 字体缺 `toUnicode`、文字层是私用区码点的页；已尝试对这几页改走 OCR |
-| `image_tables` | 有 `Table N` 图注但区域内无文字层 → 表格是图片，未抽取 |
-| `figures_dropped` | 被判定为子图/装饰的块及理由 |
+| `verbatim` | 字符账本：文字层字符数 / 块内字符数 / 丢失 / 多出 / 覆盖率；覆盖率低于 0.995 会写进 `issues` |
+| `header_footer[]` | 被剔除的页眉页脚逐条保留（页码、文本、bbox）——是标记，不是销毁 |
 
 `result.json` 的 `output_contract` **逐字照抄 `case.json` 声明的字段名**，一个不改、不加：
 
@@ -152,6 +148,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 |---|---|
 | 字段在 composer 的切片里有同名键 | 原值输出，`field_status.<字段>.method = "exact"` |
 | 字段名是普通文献名词（`equations`/`citations`/`full_text_blocks`） | 路由到对应切片，`method = "alias:formulas"` 等，**路由规则写在结果里** |
+| 字段的 `items` 里写着 `cells`/`header`/`rows` 这类形状词 | 按**契约自己的 schema** 路由到表格切片，`method = "items-shape:tables"` |
 | 字段是任务型输出（`answers`/`summary`） | 用本 Skill 的发现兜底，`method = "fallback:…"`，置信度 0.5 |
 | 本 Skill 确实产不出 | 保留原 key，输出 `{"value": <按声明类型的空值>, "method": "unsupported", "confidence": 0}`，并写进 `uncertainty.missing` |
 
@@ -164,50 +161,37 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 判据在 `field_status.<字段>`：`"empty": true` 表示这个字段是空的；
 若同时 `confidence` 为 0，说明不是没找到，是根本没读到——别把它当成结论。
 
+`verify.py` 打印三段：`checks`（读自己的 `doc.json`：几何、决策回放、契约对齐）、
+`independent`（**重开 PDF** 重抽文字层做字符多重集比对、逐格核对表格单元格是否在该页、
+再用 pypdf 这个第二实现交叉验证字符量）、`problems`（要逐条修）。前者是自洽，后者才可能与结论矛盾。
+
 ## 怎么证明它比不加载更好（对照协议）
 
-评分要的是「加载 Skill 的 Agent vs 不加载的 Agent」。这个对照**必须由评测方执行**，
-本 Skill 不含模型调用，也不会伪造对照结果。若要跑，协议是：
+评分项要的是「加载 Skill 的 Agent vs 不加载的 Agent」。本 Skill 不含模型调用，
+也不编造模型运行记录。能离线做的那一半已经做了，脚本与结果都在仓库里：
 
-1. 同一批 fixed case 跑两遍，条件只有一处不同：一遍装本 Skill，一遍不装（harness 原生，
-   模型自行用 PDF 工具读并填 `result.json`）；每条件 3 次重复，取中位数。
-2. 用**同一个打分器**对 `output_contract` 逐字段打分，输出 `(a) 字段分 / (b) 字段分 / delta` 表。
-3. 分数表原样贴进 `benchmark.json`，注明运行时间、模型版本、是否触发限流——
-   平台记录的真实轨迹为准，本 Skill 不填这些数字。
+本 Skill 的固定用例还不进离线对照：它的产出要由 Agent 用 `fill.json` 写入
+译文 / 改写 / 成稿后才完整，纯脚本跑分只会低估，给数字反而误导。
+协议与脚本在 `bench/base_agent.py`，评测方按同一 case 跑两遍即可复现。
 
-本 Skill 的主张范围写在这里，避免被读成更大的声明：
+来源 `bench/base_agent.py` + `bench/base_vs_skill.json`，**离线对照，不是平台成绩**。
+`base` 是「不加载 Skill」的下界代理：只给引擎的 `page.get_text("text")` 纯文本转储，
+没有块 id、没有分栏、没有表格/图/公式，也没有证据。真实的多模态模型会比这个代理强，
+所以 delta 只会更小——这也是为什么这里给的是**下界**而不是宣传数字。
+
+真正的模型对照仍需评测方执行：同一批 case、只差是否安装本 Skill、用同一个打分器逐字段打分、
+每条件重复取中位数；平台记录的真实轨迹为准，本 Skill 不填这些数字。
+
+主张范围写在这里，避免被读成更大的声明：
 
 | 主张 | 可复现的检查 |
 |---|---|
 | 契约字段名逐字对上、类型对得上、填不出的如实标 `unsupported` | `verify.py` 的 `checks.contract` |
 | 每条结论能回到页码 + 块 id + 原文引句 | `verify.py` 回查引句 + `checks.geometry` |
-| 版面判断可复核（为什么在这里断段、该页用哪种读序） | 每块的 `order_rule` / `break_reason` / `bbox` |
-| 单篇字符不丢不增 | `raw_text.txt` 与正文做字符多重集比对（`bench/baseline_compare.py`）|
-| 加密/扫描/空白/乱码/页码错乱不崩，降级留痕 | `coverage.json` 的四项异常字段 + 状态位 |
-
-**不主张**：内容理解强于多模态模型。表格语义、公式含义这些，基础模型可能更好；
-本 Skill 的价值在于「同样的文字，结构与证据链是否可靠、是否可复核」，不在语义猜测。
-
-## 怎么证明它比不加载更好（对照协议）
-
-评分要的是「加载 Skill 的 Agent vs 不加载的 Agent」。这个对照**必须由评测方执行**，
-本 Skill 不含模型调用，也不会伪造对照结果。若要跑，协议是：
-
-1. 同一批 fixed case 跑两遍，条件只有一处不同：一遍装本 Skill，一遍不装（harness 原生，
-   模型自行用 PDF 工具读并填 `result.json`）；每条件 3 次重复，取中位数。
-2. 用**同一个打分器**对 `output_contract` 逐字段打分，输出 `(a) 字段分 / (b) 字段分 / delta` 表。
-3. 分数表原样贴进 `benchmark.json`，注明运行时间、模型版本、是否触发限流——
-   平台记录的真实轨迹为准，本 Skill 不填这些数字。
-
-本 Skill 的主张范围写在这里，避免被读成更大的声明：
-
-| 主张 | 可复现的检查 |
-|---|---|
-| 契约字段名逐字对上、类型对得上、填不出的如实标 `unsupported` | `verify.py` 的 `checks.contract` |
-| 每条结论能回到页码 + 块 id + 原文引句 | `verify.py` 回查引句 + `checks.geometry` |
-| 版面判断可复核（为什么在这里断段、该页用哪种读序） | 每块的 `order_rule` / `break_reason` / `bbox` |
-| 单篇字符不丢不增 | `raw_text.txt` 与正文做字符多重集比对（`bench/baseline_compare.py`）|
-| 加密/扫描/空白/乱码/页码错乱不崩，降级留痕 | `coverage.json` 的四项异常字段 + 状态位 |
+| 版面判断可复核（为何在此断段、该页用哪种读序） | `checks.decisions`：回放 `caption-start` / `vertical-gap` / `block-size-cap` / `hyphen_merged` |
+| 字符不丢不增（逐字一致） | `independent`：重开 PDF、重抽文字层、字符多重集比对（含页眉页脚去重） |
+| 表格单元格确实在该页 | `independent.table_cells`：逐格在该页文字层里查找 |
+| 加密/扫描/空白/乱码/页码错乱不崩，降级留痕 | `coverage.json` 的异常字段 + 状态位 |
 
 **不主张**：内容理解强于多模态模型。表格语义、公式含义这些，基础模型可能更好；
 本 Skill 的价值在于「同样的文字，结构与证据链是否可靠、是否可复核」，不在语义猜测。

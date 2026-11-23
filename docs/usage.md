@@ -23,7 +23,7 @@
 
 ---
 
-## 2. 六个阶段（每阶段都可单独复跑）
+## 2. 七个阶段（每阶段都可单独复跑）
 
 ### 阶段 1 · 先把仓库跑起来，确认"能跑"和"跑对"是两件事
 
@@ -108,9 +108,44 @@ python skills/paper-intro/scripts/run.py --input p09-intro --out out/fill
 这一步同时暴露了一个真 bug：按 SKILL.md 写的 `[{seg, translation}]` 形态会让 `--fill` 崩
 （只实现了 dict 形态），已修，两种形态都接受。
 
+### 阶段 7 · 把「自洽」换成「能被推翻」（第三轮）
+
+前三阶段的所有检查都读自己写出的 `doc.json`，只能证明自洽。这一阶段补了两条外部通道：
+**重开 PDF 复核**，以及**不加载 Skill 的对照**。
+
+```bash
+# 1) 重开 PDF：字符多重集 + 单元格溯源 + 第二个引擎
+python skills/paper-parse/scripts/verify.py --out _test/cases/_out/paper-parse/p01 \
+        --kind generic
+# independent: chars_missing 0 / chars_extra 0 / verbatim_ratio 1.0
+#              table_cells 30/30、cross_engine pypdf 3522 vs 3522（ratio 1.0）
+# decisions:   10 条断段决策可回放，0 条失败
+
+# 2) 不加载 Skill 的基线下界
+python bench/base_agent.py --all
+# p01 18.0→100.0、p02 0.0→100.0、p08 0.0→90.0、p06 0.0→90.0；均值 4.5→95.0（+90.5）
+
+# 3) 用例与矩阵
+cd _test/cases && python make_cases.py && python run_cases.py    # 18/18、0 失败
+python run_matrix.py                                             # 10 包 × 2 篇真论文
+```
+
+这一轮自己踩了四个坑，都记在这里，因为「一次就对」的记录不可信：
+
+1. **断段回放写错了对象**。第一版拿「上一块 bbox 底边」比「下一块 bbox 顶边」，
+   9/10 条报不一致。打印后发现标题块合并会重建 bbox，块与块相邻 ≠ 行与行相邻。
+   改成在断段时把触发断段的**两行 y 坐标**记进 `break_at`，回放这两行 → 0 失败。
+2. **跨引擎比出了假差异**。pypdf 比 PyMuPDF 多 18% 字符，原因是口径不同（一边含空白）。
+   统一成「非空白字符」后比例 1.0。若不查，就会写出一条不存在的“引擎不一致”。
+3. **表格检测太慢**。PyMuPDF 2.x 的 `find_tables` 每页加载 ONNX 模型（约 3.5s/页）。
+   加候选页门控（有 `Table N` 图注或横线才调用），p01 单次 8.6s→4.9s；
+   改完先确认表格仍是 5×6、`24.1/4.92/0.512` 逐值不变，才保留这个优化。
+4. **加密 PDF 的判断想当然了**。以为「仅 owner 口令」会让 `needs_pass` 为真，实测是 0。
+   改用 `metadata.encryption` 判断，并新增 `x07-ownerlocked` 用例锁住这个行为。
+
 ---
 
-## 3. 失败与修复对照（本轮，共 11 条）
+## 3. 失败与修复对照（第二轮，共 11 条）
 
 | # | 现象 | 根因 | 修法 | 验证 |
 |---|---|---|---|---|
@@ -133,7 +168,7 @@ python skills/paper-intro/scripts/run.py --input p09-intro --out out/fill
 | 证据 | 路径 | 规模 |
 |---|---|---|
 | 用例与期望值 | `_test/cases/*/gold.json` | 16 个用例 |
-| 用例结果 | `_test/cases/report.md` | 16/16、32/32 断言 |
+| 用例结果 | `_test/cases/report.md` | 17/17、34/34 断言 |
 | 十包回归 | `_test/cases/matrix.md` | 20 次运行、0 失败 |
 | 缺陷专项断言 | `_test/test_defects.py` | 14 条 |
 | 逐字一致性 | `out/*/raw_text.txt` + 字符账本 | 每次运行生成 |
@@ -158,7 +193,7 @@ python tools/make_trace.py --session <session.jsonl> --out trace/steps.jsonl
 
 ```bash
 # 1) 用例能不能重现
-cd _test/cases && python make_cases.py && python run_cases.py     # 期望 16/16
+cd _test/cases && python make_cases.py && python run_cases.py     # 期望 17/17
 
 # 2) 十包有没有退化
 python run_matrix.py                                              # 期望 20/20

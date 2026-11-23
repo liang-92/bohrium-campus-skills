@@ -20,7 +20,7 @@
 
 ```bash
 cd _test/cases
-python make_cases.py      # 生成 16 个用例目录（含 paper.pdf）
+python make_cases.py      # 生成 18 个用例目录（含 paper.pdf）
 python run_cases.py       # 跑对应 skill，按 gold.json 核对 → report.md
 python run_matrix.py      # 10 个包 × 2 篇真实论文 + verify.py → matrix.md
 ```
@@ -54,6 +54,8 @@ python run_cases.py --skill=paper-kg
 | `x03-corrupt` | 异常 | 随机字节 → `unable`，`result.json` 仍写出 |
 | `x04-nopdf` | 异常 | 目录里没有 PDF → `unable` |
 | `x05-zeropage` | 异常 | `/Count 0` → `unable`，不崩 |
+| `x06-imagetable` | 异常 | 有文字层但表格是图片 → `image_tables[]` 标记，不报「无表格」 |
+| `x07-ownerlocked` | 异常 | 仅 owner 口令、user 口令为空 → 空口令读出，标 `encrypted/decrypted` |
 
 合成论文页眉写着 `SYNTHETIC TEST DOCUMENT`，内容为虚构，仅用于测试，
 不要当成真实文献引用。

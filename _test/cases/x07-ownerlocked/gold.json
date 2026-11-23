@@ -1,0 +1,8 @@
+{
+  "expect_status": [
+    "complete"
+  ],
+  "pages": 3,
+  "must_have_text": true,
+  "expect_decrypted": true
+}
