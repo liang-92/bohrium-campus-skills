@@ -29,6 +29,9 @@ import os
 import re
 from datetime import datetime, timezone
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
 SKIP_MARKERS = ("<system-reminder", "<user_info>", "<identity_context>", "<project_context>")
 
 
@@ -73,6 +76,88 @@ def clean(s: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", s).strip()
 
 
+# --------------------------------------------------------------------------- #
+# redaction: a submitted bundle must not carry a live credential
+# --------------------------------------------------------------------------- #
+REDACT_PATTERNS = [
+    (re.compile(r"(PLAYGROUND_TOKEN\s*[=:]\s*)(\S+)", re.I), r"\1<REDACTED>"),
+    (re.compile(r"\basp_[0-9a-fA-F]{16,}\b"), "<REDACTED_TOKEN>"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "<REDACTED_TOKEN>"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"), "<REDACTED_TOKEN>"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), "<REDACTED_TOKEN>"),
+    (re.compile(r"(?i)\b(password|passwd|secret|api[_-]?key)\b\s*[=:]\s*\S{6,}"),
+     r"\1=<REDACTED>"),
+]
+# Tools that type into a form: the typed value may be a password even when no
+# key in the payload says so.
+TYPING_TOOLS = {"mcp__browser__dom_cua_type", "mcp__browser__cua_type",
+                "mcp__computer-use__gui_type", "Type"}
+
+
+_LITERALS: list | None = None
+
+
+def _literals() -> list:
+    """Exact secret strings to mask, from a gitignored file or an env var.
+
+    A password the user typed into a form has no `key=value` shape and no prefix,
+    so no pattern can find it.  Keeping the literal out of this public repo is
+    the point of the file; it never enters a bundle either.
+    """
+    global _LITERALS
+    if _LITERALS is not None:
+        return _LITERALS
+    out = []
+    env = os.environ.get("TRACE_REDACT", "")
+    out += [s for s in re.split(r"[,\n]", env) if len(s) >= 6]
+    for path in (os.path.join(HERE, "_redact.txt"),
+                 os.path.join(ROOT, "_test", "redact.txt"),
+                 os.path.expanduser("~/.config/playground/_redact.txt")):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                out += [ln.strip() for ln in fh if len(ln.strip()) >= 6]
+        except OSError:
+            continue
+    _LITERALS = sorted(set(out), key=len, reverse=True)
+    return _LITERALS
+
+
+def redact_text(s: str) -> str:
+    if not s:
+        return s
+    for lit in _literals():
+        if lit in s:
+            s = s.replace(lit, "<REDACTED>")
+    for rx, repl in REDACT_PATTERNS:
+        s = rx.sub(repl, s)
+    return s
+
+
+def _looks_secret(value: str) -> bool:
+    """Short, single-token, contains a digit: a typed password/username, not prose."""
+    return (6 <= len(value) <= 64 and " " not in value and "\n" not in value
+            and any(c.isdigit() for c in value))
+
+
+def redact_args(args, tool_name: str = ""):
+    """Recursively mask secrets inside a tool-call payload."""
+    if isinstance(args, dict):
+        typing = str(args.get("toolName") or tool_name) in TYPING_TOOLS
+        out = {}
+        for k, v in args.items():
+            if typing and k == "text" and isinstance(v, str) and _looks_secret(v):
+                out[k] = "<REDACTED_TYPED>"
+            else:
+                out[k] = redact_args(v, str(args.get("toolName") or tool_name))
+        return out
+    if isinstance(args, list):
+        return [redact_args(v, tool_name) for v in args]
+    if isinstance(args, str):
+        return redact_text(args)
+    return args
+
+
+
 def iso(ms) -> str | None:
     try:
         return datetime.fromtimestamp(float(ms) / 1000.0, tz=timezone.utc) \
@@ -82,7 +167,7 @@ def iso(ms) -> str | None:
 
 
 def clip(s: str, limit: int) -> str:
-    s = re.sub(r"\s+", " ", s or "").strip()
+    s = redact_text(re.sub(r"\s+", " ", s or "").strip())
     if len(s) <= limit:
         return s
     return s[:limit] + f"…[truncated {len(s) - limit} chars]"
@@ -90,12 +175,12 @@ def clip(s: str, limit: int) -> str:
 
 def as_args(raw):
     if isinstance(raw, dict):
-        return raw
+        return redact_args(raw)
     if not isinstance(raw, str):
         return {}
     try:
         val = json.loads(raw)
-        return val if isinstance(val, dict) else {"value": val}
+        return redact_args(val) if isinstance(val, dict) else {"value": redact_text(str(val))}
     except Exception:
         return {"raw": clip(raw, 300)}
 
