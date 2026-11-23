@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -61,7 +62,26 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--profile", default=_default_profile())
     ap.add_argument("--no-ocr", action="store_true")
     ap.add_argument("--max-blocks", type=int, default=1200)
+    ap.add_argument("--probe", action="store_true",
+                    help="report which engines exist, then exit (no case needed)")
     args = ap.parse_args(argv)
+
+    if args.probe:
+        # Step 0 of the SKILL.md: know what is installed before promising quality.
+        from pk import backends as pk_backends
+        import importlib.util as _ilu
+        info = {
+            "engines": pk_backends.available_backends(),
+            "ocr": {"tesseract": bool(_ilu.find_spec("pytesseract") or shutil.which("tesseract")),
+                    "ocrmypdf": bool(shutil.which("ocrmypdf")),
+                    "cli": bool(shutil.which("tesseract"))},
+            "poppler": bool(shutil.which("pdftotext")),
+            "python": sys.version.split()[0],
+            "profile": args.profile,
+            "note": "missing engines degrade quality; nothing is assumed to exist",
+        }
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+        return 0
 
     os.makedirs(args.out, exist_ok=True)
     t0 = time.time()
