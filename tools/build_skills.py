@@ -22,7 +22,9 @@ from skills_manifest import SKILLS, COMMON_ENV  # noqa: E402
 
 SKILL_MD = """---
 name: {name}
-description: {description}
+description: >-
+  {description}
+  {description_zh}
 version: 1.0.0
 license: MIT
 ---
@@ -232,6 +234,9 @@ def render_md(skill: dict) -> str:
     return SKILL_MD.format(
         name=skill["name"],
         description=skill["description"],
+        # Chinese tasks are the norm here; an English-only trigger description
+        # risks the skill never being selected in the first place.
+        description_zh=skill.get("description_zh", ""),
         title=skill["title"],
         challenge=skill["challenge"],
         when="\n".join(f"- {w}" for w in skill["when"]),

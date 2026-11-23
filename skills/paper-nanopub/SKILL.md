@@ -1,6 +1,8 @@
 ---
 name: paper-nanopub
-description: Split a paper into atomic, checkable assertions and bind each one to its minimal supporting quote, with provenance and machine-readable serialization. Use when a task asks for nanopublications, claim extraction, evidence binding, or machine-checkable statements from a paper.
+description: >-
+  Split a paper into atomic, checkable assertions and bind each one to its minimal supporting quote, with provenance and machine-readable serialization. Use when a task asks for nanopublications, claim extraction, evidence binding, or machine-checkable statements from a paper.
+  中文触发：Nanopublication / 原子断言 / 论断抽取 / 证据绑定；把论文拆成可核查的单条断言，并绑定最小支撑引文与出处。
 version: 1.0.0
 license: MIT
 ---

@@ -23,12 +23,30 @@ from paperkit.document import analyze_path  # noqa: E402
 
 
 def order_score(doc):
-    """Sections should appear in page order; blocks should follow section order."""
+    """Sections should appear in page order; blocks should follow section order.
+
+    `column_inversions` is the metric the rubric actually names. A page-level
+    counter is always 0 for a sane extractor (pages come out in order), so it
+    says nothing; the real question is whether a block inside one column starts
+    above the block before it. Table regions are skipped: a table is read
+    column-wise on purpose.
+    """
     pages = [s["page"] for s in doc["sections"]]
     inversions = sum(1 for a, b in zip(pages, pages[1:]) if b < a)
     blk_pages = [b["page"] for b in doc["blocks"]]
     block_inv = sum(1 for a, b in zip(blk_pages, blk_pages[1:]) if b < a)
-    return {"section_inversions": inversions, "block_page_inversions": block_inv}
+    prev = {}
+    col_inv = 0
+    for b in doc["blocks"]:
+        if b.get("in_table") or not b.get("bbox"):
+            continue
+        key = (b.get("page"), b.get("column"))
+        y0 = b["bbox"][1]
+        if key in prev and y0 < prev[key] - 5:
+            col_inv += 1
+        prev[key] = y0
+    return {"section_inversions": inversions, "block_page_inversions": block_inv,
+            "column_inversions": col_inv}
 
 
 def run_one(path):
@@ -89,7 +107,7 @@ def main():
              "Public PDFs, default settings, one run each; `fingerprint` is a hash of block ids, "
              "pages and the first 80 characters, so an unchanged fingerprint across runs means "
              "deterministic output.", "",
-             "| file | pages | engine | chars/page | blocks | sections | depth | tables (captioned) | formulas | refs | figures | sec. inversions | block inversions | s | deterministic |",
+             "| file | pages | engine | chars/page | blocks | sections | depth | tables (captioned) | formulas | refs | figures | sec. inversions | page regressions | column inversions | s | deterministic |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         if "error" in r:
@@ -97,13 +115,20 @@ def main():
             continue
         lines.append("| {file} | {pages} | {engine} | {chars_per_page} | {blocks} | {sections} | {max_depth} | "
                      "{tables} ({tables_with_caption}) | {formulas} | {references} | {figures} | "
-                     "{section_inversions} | {block_page_inversions} | {seconds} | {det} |".format(
+                     "{section_inversions} | {block_page_inversions} | {column_inversions} | {seconds} | {det} |".format(
                          det="yes" if determined.get(r["file"]) else "NO", **r))
     lines += ["", "## How to read this", "",
-              "- `block inversions` counts blocks whose page number goes backwards; 0 means the "
-              "reading order never jumps between pages.",
+              "- `page regressions` counts blocks whose page number goes backwards: 0 means the "
+              "reading order never jumps back to an earlier page. It is a coarse guard, not a "
+              "quality score — a plain y-sorted dump also scores 0 here.",
+              "- `column inversions` is the rubric's reading-order check: within one page and one "
+              "column, a block that starts above the block before it. Table regions are excluded, "
+              "because a table is read column-wise on purpose. This is the number to watch; the "
+              "per-file breakdown with reasons is in `docs/baseline.md`.",
               "- `sec. inversions` counts section headings out of page order; non-zero means the "
               "heading detector mistook a running head or a caption for a section.",
+              "- `figures` counts whole figures after sub-panels and decorative marks are dropped; "
+              "vector charts are included, which is why BERT shows 5 rather than 0.",
               "- Determinism matters because the platform runs each case three times per condition.",
               "", "Regenerate with `python3 bench/run_bench.py`."]
     os.makedirs(os.path.dirname(args.out), exist_ok=True)

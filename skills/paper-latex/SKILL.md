@@ -1,6 +1,8 @@
 ---
 name: paper-latex
-description: Turn a parsed paper into a compilable LaTeX project: escaped body, section hierarchy, booktabs tables, equation environments, thebibliography, and a real compile attempt with error lines. Use when a task asks to produce or fix LaTeX source, migrate a manuscript into a template, or make a build reproducible.
+description: >-
+  Turn a parsed paper into a compilable LaTeX project: escaped body, section hierarchy, booktabs tables, equation environments, thebibliography, and a real compile attempt with error lines. Use when a task asks to produce or fix LaTeX source, migrate a manuscript into a template, or make a build reproducible.
+  中文触发：LaTeX 写作 / 生成 tex / 编译论文 / 模板迁移；转义正文、生成章节层级与 booktabs 表格、公式环境、参考文献，并真实编译并回填报错行。
 version: 1.0.0
 license: MIT
 ---
@@ -43,6 +45,9 @@ SKILL_DIR=/skills/weekly-skill
   find /skills /app /workspace /opt -maxdepth 5 -name SKILL.md 2>/dev/null | head -1 | xargs -r dirname
 )"
 cd "$SKILL_DIR" || exit 1
+
+# 0.5) 环境探测：装了哪些引擎/OCR。缺了会降级，脚本不假设任何东西存在
+python3 scripts/run.py --probe
 
 # 1) 一次跑完解析 + 组包
 python3 scripts/run.py --input /input --out /app/output

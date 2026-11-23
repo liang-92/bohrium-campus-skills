@@ -1,6 +1,8 @@
 ---
 name: paper-kg
-description: Build a small, evidence-bound knowledge graph from a paper: entities (methods, datasets, metrics, tasks), typed relations, alias groups and answerable queries. Use when a task asks for entity/relation extraction, a literature knowledge graph, or graph export with provenance.
+description: >-
+  Build a small, evidence-bound knowledge graph from a paper: entities (methods, datasets, metrics, tasks), typed relations, alias groups and answerable queries. Use when a task asks for entity/relation extraction, a literature knowledge graph, or graph export with provenance.
+  中文触发：文献知识图谱 / 实体关系抽取 / 三元组 / 本体构建；输出方法、数据集、指标、任务等实体与带类型的关系统计，附别名组与可查询导出。
 version: 1.0.0
 license: MIT
 ---

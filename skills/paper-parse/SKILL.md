@@ -1,6 +1,8 @@
 ---
 name: paper-parse
-description: Parse a research PDF into an evidence-linked structure (sections, blocks, tables, formulas, figures, references) where every string carries a page and block id. Use when a task asks to extract, verify, quote or audit the content of a scholarly PDF, especially two-column layouts, cross-page tables or scanned pages.
+description: >-
+  Parse a research PDF into an evidence-linked structure (sections, blocks, tables, formulas, figures, references) where every string carries a page and block id. Use when a task asks to extract, verify, quote or audit the content of a scholarly PDF, especially two-column layouts, cross-page tables or scanned pages.
+  中文触发：文献文档解析 / 解析论文 PDF / 抽取正文、章节、表格、公式、图与参考文献的位置，并给出页码与块号，便于复核与引用；适用于双栏排版、跨页表格、扫描件。
 version: 1.0.0
 license: MIT
 ---

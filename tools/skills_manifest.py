@@ -36,6 +36,7 @@ SKILLS = [
         "challenge": "阅读01 文献文档解析",
         "title": "Paper Parse",
         "description": "Parse a research PDF into an evidence-linked structure (sections, blocks, tables, formulas, figures, references) where every string carries a page and block id. Use when a task asks to extract, verify, quote or audit the content of a scholarly PDF, especially two-column layouts, cross-page tables or scanned pages.",
+        "description_zh": "中文触发：文献文档解析 / 解析论文 PDF / 抽取正文、章节、表格、公式、图与参考文献的位置，并给出页码与块号，便于复核与引用；适用于双栏排版、跨页表格、扫描件。",
         "when": [
             "任务要求“把这篇 PDF 解成结构化结果”“逐段核对”“给出原文定位”",
             "需要从论文里取标题/摘要/章节/表/公式/参考文献并保留页码",
@@ -99,6 +100,7 @@ python3 scripts/verify.py --out /app/output --kind generic
         "challenge": "阅读03 文献翻译",
         "title": "Paper Translate",
         "description": "Translate research papers segment by segment with a locked glossary, protected numbers/units/citations and a verification pass. Use when a task asks for a Chinese translation of a paper, bilingual paragraph alignment, terminology consistency, or a translation QA report.",
+        "description_zh": "中文触发：文献翻译 / 中英对照 / 术语一致性 / 翻译质检；逐段翻译并锁定术语表，数字、单位、引用编号原样保留，输出翻译核验报告。",
         "when": [
             "任务要求翻译论文/摘要/章节，并要求术语统一、可回看原文",
             "需要段落级双语对照、译后核验、译不准处标注",
@@ -152,6 +154,7 @@ python3 scripts/verify.py --out /app/output --kind translate  # 译后核验
         "challenge": "阅读10 文献总结与结构化笔记",
         "title": "Paper Notes",
         "description": "Turn a paper into a structured reading note: research question, data, methods, findings, limitations, per-section gists and knowledge items, each linked to a page and block. Use when a task asks for a paper summary, reading card, literature note or structured extraction that must stay traceable to the source.",
+        "description_zh": "中文触发：文献总结 / 阅读笔记 / 论文卡片 / 结构化摘要；输出研究问题、数据、方法、结论、局限、分节要点与知识点，每条都能回到原文页码。",
         "when": [
             "任务要求“总结这篇论文”“做阅读笔记/论文卡片/结构化摘要”",
             "需要按论文章节而不是通用模板组织内容",
@@ -199,6 +202,7 @@ python3 scripts/run.py --input /input --out /app/output --profile notes
         "challenge": "阅读14 Nanopublication",
         "title": "Paper Nanopublication",
         "description": "Split a paper into atomic, checkable assertions and bind each one to its minimal supporting quote, with provenance and machine-readable serialization. Use when a task asks for nanopublications, claim extraction, evidence binding, or machine-checkable statements from a paper.",
+        "description_zh": "中文触发：Nanopublication / 原子断言 / 论断抽取 / 证据绑定；把论文拆成可核查的单条断言，并绑定最小支撑引文与出处。",
         "when": [
             "任务要求把结论拆成可判断真假的断言（nanopublication / claim graph）",
             "需要每条断言绑定最小证据片段与原文位置",
@@ -248,6 +252,7 @@ python3 scripts/run.py --input /input --out /app/output --profile nanopub
         "challenge": "阅读15 文献知识图谱构建",
         "title": "Paper Knowledge Graph",
         "description": "Build a small, evidence-bound knowledge graph from a paper: entities (methods, datasets, metrics, tasks), typed relations, alias groups and answerable queries. Use when a task asks for entity/relation extraction, a literature knowledge graph, or graph export with provenance.",
+        "description_zh": "中文触发：文献知识图谱 / 实体关系抽取 / 三元组 / 本体构建；输出方法、数据集、指标、任务等实体与带类型的关系统计，附别名组与可查询导出。",
         "when": [
             "任务要求从论文抽实体与关系、建知识图谱",
             "需要别名归一、关系方向与条件、来源绑定",
@@ -295,6 +300,7 @@ python3 scripts/run.py --input /input --out /app/output --profile kg
         "challenge": "写作02 学术语言润色",
         "title": "Paper Polish",
         "description": "Diagnose academic prose before rewriting it: long sentences, passive stacking, hedging strength, absolute claims, terminology drift and abbreviation first use. Use when a task asks to polish, edit or proofread academic English/Chinese while preserving meaning, numbers and citations.",
+        "description_zh": "中文触发：学术润色 / 语言修改 / 论文校对 / 中式英语；先做句级诊断（长句、被动堆叠、断言强度、术语漂移、缩写首现），再给出改写，保留数字与引用。",
         "when": [
             "任务要求润色/校对/改写学术文本，且不能改变原意与结论强度",
             "需要逐条修改记录（原文/改文/类型/理由）",
@@ -343,6 +349,7 @@ python3 scripts/run.py --input /input --out /app/output --profile polish
         "challenge": "写作04 参考文献与引用管理",
         "title": "Paper References",
         "description": "Audit and rebuild reference lists: parse entries, map in-text citations, detect missing/uncited/duplicate items, check numbering and emit GB/T 7714 / APA / BibTeX. Use when a task involves citation management, bibliography cleanup, reference verification or citation-text consistency.",
+        "description_zh": "中文触发：参考文献管理 / 引用核对 / 文献表整理 / 去重 / GB-T 7714 / APA / BibTeX；解析条目、映射正文引用、找出缺失未引用与重复项。",
         "when": [
             "任务要求检查/整理参考文献、正文引用与文末列表是否一致",
             "需要编号更新、去重、格式转换（GB/T 7714、APA、BibTeX）",
@@ -390,6 +397,7 @@ python3 scripts/run.py --input /input --out /app/output --profile refs
         "challenge": "写作08 引言与相关工作写作",
         "title": "Paper Introduction",
         "description": "Assemble an evidence-bound introduction and related-work outline from a paper: problem statements, grouped prior work, gaps derived from those groups, contributions mapped to results, plus citation coverage. Use when a task asks to write or revise an introduction, related work section or research-gap statement.",
+        "description_zh": "中文触发：写引言 / 相关工作 / 研究空白 / 贡献陈述；从论文里抽出问题句、分组的前人工作、由分组推出的空白与对应贡献，并给出引用覆盖。",
         "when": [
             "任务要求写/改引言、相关工作、研究空白与贡献表述",
             "需要“按问题分组比较”而不是逐篇罗列",
@@ -435,6 +443,7 @@ python3 scripts/run.py --input /input --out /app/output --profile intro
         "challenge": "写作09 方法与实验章节写作",
         "title": "Paper Methods",
         "description": "Extract experimental setup into a checkable parameter table: hyperparameters, datasets and splits, hardware, seeds, metrics, plus a reproducibility checklist with explicit gaps. Use when a task asks to write or audit a methods/experimental section, or to make an experiment reproducible.",
+        "description_zh": "中文触发：写方法与实验章节 / 复现性检查 / 超参数与数据集整理；输出参数表、数据集与划分、硬件、随机种子、指标，以及逐项可复现清单。",
         "when": [
             "任务要求写方法与实验章节、整理参数表、检查可复现性",
             "需要把散落在正文/配置/日志里的参数对齐",
@@ -481,6 +490,7 @@ python3 scripts/run.py --input /input --out /app/output --profile methods
         "challenge": "写作13 LaTeX 写作与编译",
         "title": "Paper LaTeX",
         "description": "Turn a parsed paper into a compilable LaTeX project: escaped body, section hierarchy, booktabs tables, equation environments, thebibliography, and a real compile attempt with error lines. Use when a task asks to produce or fix LaTeX source, migrate a manuscript into a template, or make a build reproducible.",
+        "description_zh": "中文触发：LaTeX 写作 / 生成 tex / 编译论文 / 模板迁移；转义正文、生成章节层级与 booktabs 表格、公式环境、参考文献，并真实编译并回填报错行。",
         "when": [
             "任务要求生成/修复 LaTeX 源码并编译",
             "需要把论文结构、表格、公式、参考文献转成 .tex",

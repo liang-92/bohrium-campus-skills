@@ -1,6 +1,8 @@
 ---
 name: paper-translate
-description: Translate research papers segment by segment with a locked glossary, protected numbers/units/citations and a verification pass. Use when a task asks for a Chinese translation of a paper, bilingual paragraph alignment, terminology consistency, or a translation QA report.
+description: >-
+  Translate research papers segment by segment with a locked glossary, protected numbers/units/citations and a verification pass. Use when a task asks for a Chinese translation of a paper, bilingual paragraph alignment, terminology consistency, or a translation QA report.
+  中文触发：文献翻译 / 中英对照 / 术语一致性 / 翻译质检；逐段翻译并锁定术语表，数字、单位、引用编号原样保留，输出翻译核验报告。
 version: 1.0.0
 license: MIT
 ---

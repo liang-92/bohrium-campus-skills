@@ -1,6 +1,8 @@
 ---
 name: paper-refs
-description: Audit and rebuild reference lists: parse entries, map in-text citations, detect missing/uncited/duplicate items, check numbering and emit GB/T 7714 / APA / BibTeX. Use when a task involves citation management, bibliography cleanup, reference verification or citation-text consistency.
+description: >-
+  Audit and rebuild reference lists: parse entries, map in-text citations, detect missing/uncited/duplicate items, check numbering and emit GB/T 7714 / APA / BibTeX. Use when a task involves citation management, bibliography cleanup, reference verification or citation-text consistency.
+  中文触发：参考文献管理 / 引用核对 / 文献表整理 / 去重 / GB-T 7714 / APA / BibTeX；解析条目、映射正文引用、找出缺失未引用与重复项。
 version: 1.0.0
 license: MIT
 ---

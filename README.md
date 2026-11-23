@@ -38,7 +38,7 @@
 ```bash
 # 单个 Skill，跑一个案例目录
 python3 skills/paper-parse/scripts/run.py --input ./case --out ./out
-ls ./out        # doc.json doc.md coverage.json result.json run.log
+ls ./out        # doc.json doc.md coverage.json result.json payload.json raw_text.txt run.log
 
 # 自检
 python3 skills/paper-parse/scripts/verify.py --out ./out --kind generic
@@ -52,6 +52,22 @@ python3 skills/paper-parse/scripts/verify.py --out ./out --kind generic
 ```bash
 python3 scripts/run.py --input /input --out /app/output
 ```
+
+## 契约怎么填（`result.json`）
+
+平台会用 `case.json` 里 `output_contract` 声明的字段逐个核对，所以这里只有一条硬规则：
+**字段名逐字照抄，不改名、不增删**。
+
+| 情形 | 落地方式 |
+|---|---|
+| 组装器切片里已有同名键 | 原值输出，`field_status.<字段>.method = "exact"` |
+| 字段名是普通文献名词（`equations` / `citations` / `full_text_blocks`） | 路由到对应切片，`method = "alias:formulas"`，**用了哪条规则写在结果里** |
+| 字段是任务型输出（`answers` / `summary`） | 用本题型自己的发现兜底，`method = "fallback:…"`，置信度 0.5 |
+| 本题型确实产不出 | 保留原 key，输出 `{"value": <按声明类型的空值>, "method": "unsupported", "confidence": 0}`，并写进 `uncertainty.missing` |
+
+类型由契约自己决定：`list` → 数组，`title/authors/abstract` → 对象，
+`complete|partial|unable` → 三选一。契约没声明的切片不进 `output_contract`，
+另存 `payload.json`——否则多出来的键会被读成「把答案改了名」。
 
 ## 目录结构
 
@@ -73,14 +89,20 @@ docs/                 方法与基准说明
 
 三篇公开论文，默认参数，`python3 bench/run_bench.py` 可复现：
 
-| 文件 | 页 | 块 | 章节 | 表(带题注) | 公式 | 参考文献 | 阅读顺序倒挂 | 耗时 |
-|---|---|---|---|---|---|---|---|---|
-| 1706.03762 (Attention) | 15 | 268 | 27 | 4 (4) | 7 | 41 | 0 | 10.3s |
-| 1810.04805 (BERT) | 16 | 799 | 27 | 6 (6) | 1 | 58 | 0 | 11.2s |
-| acl2020 (双栏 ACL) | 6 | 174 | 17 | 3 (3) | 0 | 23 | 0 | 4.6s |
+| 文件 | 页 | 块 | 章节 | 表(带题注) | 图 | 公式 | 参考文献 | 分栏倒挂 | 耗时 |
+|---|---|---|---|---|---|---|---|---|---|
+| 1706.03762 (Attention) | 15 | 268 | 27 | 4 (4) | 2 | 7 | 41 | 7 | 13.3s |
+| 1810.04805 (BERT) | 16 | 799 | 27 | 6 (6) | 5 | 1 | 58 | 52 | 19.3s |
+| acl2020 (双栏 ACL) | 6 | 174 | 17 | 3 (3) | 2 | 0 | 23 | 6 | 7.1s |
 
-「阅读顺序倒挂 = 0」指没有任何块的页码相对前一块回退；两次运行输出指纹一致，
-说明结果确定。完整表格见 [`docs/benchmark.md`](docs/benchmark.md)。
+「分栏倒挂」按**同页同栏**统计（后一块的顶边低于前一块，容差 5pt），表格区域整块跳过——
+表格本来就该逐列读。这个数字不是 0，它反映的是真实残留：作者信息栏、图内文字、
+公式编号等不是线性排版的区域。**页码回退**是同名的粗指标，任何正常抽取都是 0，
+所以单列出来只作护栏，不当成绩。两次运行输出指纹一致，说明结果确定。
+完整表格与逐项解释见 [`docs/benchmark.md`](docs/benchmark.md)。
+
+「图」同时包含位图与**矢量图表**：学术 PDF 里的流程图/柱状图大多是矢量路径，
+不在图片列表里，只认图片会得到 0 张（BERT 的 5 张全是矢量图）。
 
 ## 和「朴素抽取」的对照
 
@@ -94,7 +116,21 @@ docs/                 方法与基准说明
 
 「串栏拼接」是几何真值：同一 y 高度上左右两栏各有一行，按 y 排序必然焊成一句。
 「竖排边条残段」是 arXiv 左侧 90° 旋转的提交戳被切成的碎片。
-口径、复现命令与局限见 [`docs/baseline.md`](docs/baseline.md)。
+
+同一脚本还会算**对齐评分口径**的五项（逐字一致率 / 多出字符 / 分栏倒挂 /
+表格单元格可回查 / 契约字段回填），当前结果：
+
+| 文件 | 逐字一致率 | 多出字符 | 表格单元格可回查 | 契约回填（10 字段探针） |
+|---|---|---|---|---|
+| 1706.03762 | 98.11% | 0 | 44/67（66%） | 10/10 |
+| 1810.04805 | 99.04% | 0 | 139/163（85%） | 10/10 |
+| acl2020 | 99.46% | 0 | 81/81（100%） | 10/10 |
+
+差额可由两项完全解释：行末连字符合并、`ﬁ/ﬂ` 连字展开；原始文字层另存
+`raw_text.txt`，可与 PDF 文字层逐字节 diff。口径、复现命令与局限见
+[`docs/baseline.md`](docs/baseline.md)。**这不是「基础 Agent 对照」**——那需要
+不加载 Skill 的模型在同一批 case 上跑一遍，本仓库不含模型调用，协议写在
+`docs/method.md` 与各 `SKILL.md` 的「对照协议」一节。
 
 ## 设计原则
 
@@ -103,7 +139,14 @@ docs/                 方法与基准说明
 2. **证据先行**：任何结论必须带 `block/page/quote`；读不出来就写 `uncertainty`，
    不用「合理猜测」补齐。
 3. **失败要可见**：引擎缺失、OCR 未启用、表格识别为空、编译未尝试，都写进结果，
-   而不是静默降级。
+   而不是静默降级。四种会「看起来成功、其实是错」的输入也单独标记在 `coverage.json`：
+
+   | 输入 | 标记 |
+   |---|---|
+   | 加密 PDF | `status=unable` + 原因；不崩、不假装读到 |
+   | 无文字层扫描件 | OCR 补齐；没装 OCR 引擎则写 `ocr_failed` |
+   | 乱码字体（私用区码点） | `garbled_text_layer.pages`，并对这几页改走 OCR |
+   | 页码错乱 / 表格是图片 | `page_order.warning` / `image_tables[]` |
 4. **无网络**：评审环境可能断网，全部依赖本地库；OCR 仅在系统已有 `tesseract` 时启用。
 
 ## 适用边界

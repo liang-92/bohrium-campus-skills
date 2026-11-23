@@ -1,6 +1,8 @@
 ---
 name: paper-notes
-description: Turn a paper into a structured reading note: research question, data, methods, findings, limitations, per-section gists and knowledge items, each linked to a page and block. Use when a task asks for a paper summary, reading card, literature note or structured extraction that must stay traceable to the source.
+description: >-
+  Turn a paper into a structured reading note: research question, data, methods, findings, limitations, per-section gists and knowledge items, each linked to a page and block. Use when a task asks for a paper summary, reading card, literature note or structured extraction that must stay traceable to the source.
+  中文触发：文献总结 / 阅读笔记 / 论文卡片 / 结构化摘要；输出研究问题、数据、方法、结论、局限、分节要点与知识点，每条都能回到原文页码。
 version: 1.0.0
 license: MIT
 ---

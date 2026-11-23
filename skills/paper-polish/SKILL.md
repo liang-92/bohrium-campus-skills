@@ -1,6 +1,8 @@
 ---
 name: paper-polish
-description: Diagnose academic prose before rewriting it: long sentences, passive stacking, hedging strength, absolute claims, terminology drift and abbreviation first use. Use when a task asks to polish, edit or proofread academic English/Chinese while preserving meaning, numbers and citations.
+description: >-
+  Diagnose academic prose before rewriting it: long sentences, passive stacking, hedging strength, absolute claims, terminology drift and abbreviation first use. Use when a task asks to polish, edit or proofread academic English/Chinese while preserving meaning, numbers and citations.
+  中文触发：学术润色 / 语言修改 / 论文校对 / 中式英语；先做句级诊断（长句、被动堆叠、断言强度、术语漂移、缩写首现），再给出改写，保留数字与引用。
 version: 1.0.0
 license: MIT
 ---

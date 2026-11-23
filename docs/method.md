@@ -73,7 +73,19 @@
 - **被拆开的标题**：`3.1` 单独成块时与下一块合并（这类情况在双栏 PDF 里很常见，
   编号和标题用了不同字体）；
 - **表格**：优先 `find_tables()` / `extract_tables()`，失败时用「一行里出现 ≥2 处宽间隙」
-  的行组兜底；
+  的行组兜底。单元格文字按 `get_textbox(cell)` 重读，而不是用 `extract()`——
+  后者在窄列里会把 `Layer Type` 压成 `LayerType`，看起来像另一种错误；
+- **表格区域**：落在表格 bbox 内的正文块被标记 `type=table` + `in_table=t1`，
+  文字保留（逐字层需要），但下游不再当正文读。表格是逐列排版的，
+  按行比单调性必然出现「倒挂」，标出来才谈得上准确统计；
+- **图**：位图（`page.get_images()`）+ **矢量图表聚类**。学术 PDF 的流程图/柱状图
+  大多是矢量路径，不在图片列表里，只认图片会得到 0 张（BERT 的 5 张全是矢量）。
+  聚类规则：路径 bbox 互相接触（pad 8pt）即合并，合并后要求 ≥2 条路径、宽 ≥40pt、
+  高 ≥25pt、面积 ≥ max(5000pt², 页面积 0.4%)、宽高比 0.08~12；
+  与表格 bbox 重叠 60%、被小文本框包住 92%、与位图重叠 50% 的簇直接排除；
+  ≥8 条路径记为 `kind=chart`，否则 `vector`；
+- **子图与装饰**：图注缺失且面积 < 页 2%、或整体嵌在另一张图里的，移到
+  `figures_dropped[]` 并给出理由（不静默删除）；
 - **公式**：数学符号密度 + 编号 `(12)` + `=` 关系式，同一公式的碎片行按垂直距离合并；
 - **参考文献**：从 References 标题开始，优先按 `[n]` / `n.` 切分，无编号时按「含年份」
   判定新条目，续行并入上一条。
@@ -103,14 +115,67 @@
 | 扫描页乱序 | OCR 只给文本行、没有坐标 | 按行输出，标记 `filled_by: ocr`，顺序置信度低 |
 | 三栏以上 | 递归切分可以处理，但窄栏会触发单栏保护 | 记录 `columns`，异常时在 `coverage.issues` 说明 |
 | 竖排/海报 | 不在设计范围内 | 结果会明显异常，`coverage` 里字符密度会暴露 |
+| 加密 PDF | 引擎要么抛异常要么返回空文本 | 先 `diagnose()` 判因，试空密码；失败则 `status=unable` + 原因，**不崩** |
+| 乱码字体 | 字体缺 `toUnicode`，文字层是私用区码点 | 按页统计 PUA 占比（>2% 判定），对这几页改走 OCR，并记 `garbled_text_layer` |
+| 页码错乱 | 重排过的 PDF / 扫描书 | 在**页眉页脚剔除前**读页脚数字，非单调或重复写 `page_order.warning` |
+| 表格是图片 | 有 `Table N` 图注、区域内无文字层 | 记 `image_tables[]`（页码 + 图注），明确「单元格不在 tables[] 里，不要编造」 |
+
+这四类（加密、乱码、页码、图片表格）会产出「看起来正常、其实错」的结果，
+所以每一条都有独立字段而不只是日志一行；`_test/test_defects.py` 用合成页字典
+覆盖了后三类，不需要 PDF 就能跑。
 
 ## 5. 为什么这样能提升「使用增益」
 
 对照基线（直接把 PDF 文本塞给模型）时，这里的增益来自三处可验证的差异：
 
-1. **顺序正确率**：串栏会直接污染下游每一条结论；XY-cut 后 `block_page_inversions = 0`。
+1. **顺序正确率**：串栏会直接污染下游每一条结论；XY-cut 后串栏拼接 = 0。
+   注意「页码回退」这个指标任何正常抽取都是 0，不能当成绩；真正有意义的是
+   **同页同栏倒挂数**（`bench/run_bench.py` 的 `column inversions`）：
+   当前 7 / 52 / 6（Attention / BERT / ACL），残留在作者信息栏、图内文字、
+   公式编号这些非线性区域，`docs/baseline.md` 逐条列了原因。
 2. **可核验性**：每条输出都有锚点，评审能抽查；基线做不到。
+   连带 `verify.py` 会复算「bbox 是否真在自己声明的栏内」「引句是否真在该块里」。
 3. **稳定性**：同一案例三次运行结果一致（`docs/benchmark.md` 的 fingerprint），
    评测的方差来自模型，而不是解析。
 
 这三点都能用 `bench/run_bench.py` 和我附的样例复现，不靠文字自述。
+
+## 6. 契约回填（`result.json`）
+
+平台核对的是 `case.json` 里 `output_contract` 声明的那些字段，所以回填只有一条硬规则：
+**键名逐字保留**。实现拆成三步：
+
+1. **读契约**：三种写法都归一成 `Field(name, kind, description, enum, items)`
+   —— `{"tables": "list"}`、`{"tables": {"type": "array", "items": …}}`、
+   `[{"name": "tables", …}]`，以及「没有契约」。
+2. **定类型**：由契约自己的描述决定。`list`/`array` → 数组；`title/authors/abstract`
+   这种斜杠串 → 对象；`complete|partial|unable` → 三选一枚举（回填运行状态）；
+   `?` → 未知。
+3. **找值**：按 `exact`（组装器同名切片）→ `slice`（标准切片）→ `alias`
+   （普通文献名词：`equations`→formulas、`citations`→references）→
+   `description`（契约描述里出现 table/figure/…）→ `fallback`（任务型字段用它自己的
+   发现兜底）→ `unsupported`。每一步都写进 `field_status`，置信度递减。
+
+`unsupported` 的字段键还在，值是
+`{"value": <按声明类型的空值>, "method": "unsupported", "confidence": 0}`，
+同时进 `uncertainty.missing`。宁可显示「这条我答不了」，也不拿正文块顶替表格字段——
+后者在评审眼里就是编造。契约没声明的切片写进同目录的 `payload.json`，
+让 `output_contract` 的宽度与契约完全一致。
+
+`verify.py --kind generic` 会对 `case.json` 复核三件事：声明的字段是否都在、
+有没有多出来的键、值有没有 `null`。
+
+## 7. 对照协议（谁来做，怎么算）
+
+评分要的是「加载 Skill 的 Agent vs 不加载的 Agent」。本仓库**不含模型调用**，
+所以这个对照只能由评测方执行，这里只把协议写清楚：
+
+1. 同一批 fixed case 跑两遍，唯一差别是装不装本 Skill；每条件 3 次重复取中位数；
+2. 用同一个打分器对 `output_contract` 逐字段打分，输出
+   `(a) 字段分 / (b) 字段分 / delta` 表；
+3. 分数表原样贴进 `benchmark.json`，注明模型版本、运行时间、是否触发限流。
+
+本仓库能自己算的、对齐评分口径的五项指标（逐字一致率、多出字符、分栏倒挂、
+表格单元格可回查、契约回填）在 `bench/baseline_compare.py` 里，结果见
+`docs/baseline.md`。它们证明「本方案自己有没有做到」，**不构成**对基础 Agent 的
+增益声明；把它当增益证据就是错的。
