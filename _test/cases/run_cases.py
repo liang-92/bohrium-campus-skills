@@ -125,7 +125,7 @@ def check(gold: dict, run: dict) -> list[tuple[str, bool, str]]:
         add("result.json 存在", run["has_result"])
     if gold.get("must_not_have_text"):
         body = flat_text(oc.get("content") or {})
-        add("未编造正文", "Sparse Routing" not in body)
+        add("无正文", "Sparse Routing" not in body)
     if gold.get("must_have_text"):
         body = flat_text(oc.get("document") or {})
         add("读到了正文", len(body) > 80, f"{len(body)} chars")

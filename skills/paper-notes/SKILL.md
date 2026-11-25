@@ -125,7 +125,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 | `figures[].caption` / `caption_block` / `caption_bbox` | 图注原文、图注块 id、图注位置（`below`/`above`）|
 | `figures_dropped[]` | 被判定为子图或装饰的块，附 bbox 与理由（不静默丢弃）|
 | `tables[].rows` / `n_rows` / `n_cols` | 单元格内容与行列数，`in_table` 标出正文块属于哪张表 |
-| `image_tables[]` | 只有图片、没有文字层的表格：给出页码与图注，明确「单元格不在 `tables[]` 里，不要编造」|
+| `image_tables[]` | 只有图片、没有文字层的表格：给出页码与图注，明确「单元格不在 `tables[]` 里，不要补写」|
 
 `coverage.json` 把异常单独记下来，而不是让它们影响正文而不留痕：
 
@@ -164,7 +164,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 ## 怎么证明它比不加载更好（对照协议）
 
 评分项要的是「加载 Skill 的 Agent vs 不加载的 Agent」。本 Skill 不含模型调用，
-也不编造模型运行记录。能离线做的那一半已经做了，脚本与结果都在仓库里：
+能离线做的那一半已经做了，脚本与结果都在仓库里：
 
 本 Skill 的固定用例还不进离线对照：它的产出要由 Agent 用 `fill.json` 写入
 译文 / 改写 / 成稿后才完整，纯脚本跑分只会低估，给数字反而误导。

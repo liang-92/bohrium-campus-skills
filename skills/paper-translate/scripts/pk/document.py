@@ -125,6 +125,9 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
     pages = _flatten(extracted)
     if not pages:
         return _unreadable(pdf_path, extracted)
+    # Remember whether any page had a real text layer *before* OCR: after OCR
+    # every scanned page has chars, but the evidence is still OCR, not a layer.
+    had_text_layer = any(p["chars"] >= backends.MIN_PAGE_CHARS for p in pages)
     # A page whose text layer is font garbage must be OCR'd, not trusted: the
     # PUA code points look like text and would poison every downstream field.
     garbled = garbled_pages(pages)
@@ -150,12 +153,20 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
         layout.order_page(p)
 
     blocks = layout.build_blocks(pages, body)
+    # `Abstract The structure ...` is a heading the size test cannot see.
+    blocks = structure.split_inline_headings(blocks, body)
+    blocks = structure.split_tail_headings(blocks)
     # Every block says which engine produced it: a page that needed OCR is not
     # the same evidence as a born-digital text layer, and a reviewer cannot
     # tell them apart from `bbox` alone.
     page_engine = {p["number"]: (p.get("filled_by") or extracted["backend"]) for p in pages}
     for b in blocks:
         b.setdefault("engine", page_engine.get(b["page"], extracted["backend"]))
+    blocks = structure.split_ocr_sections(blocks)
+    sections, blocks = structure.build_sections(blocks, body)
+    # Rejoin visual-line fragments before captions/tables attach: "0.9" and
+    # "percent" separated by a line break are one measurement, not two blocks.
+    blocks = structure.merge_line_fragments(blocks, body)
     sections, blocks = structure.build_sections(blocks, body)
 
     raw_tables = backends.tables(pdf_path)
@@ -168,14 +179,25 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
             continue
         tables.append({"id": f"t{i}", "page": t["page"], "bbox": t.get("bbox"),
                        "caption": "", "caption_block": None,
-                       "header": norm["header"], "rows": norm["rows"],
+                       "header": norm["header"], "header_rows": norm.get("header_rows") or [],
+                       "rows": norm.get("data_rows") or norm["rows"],
+                       "rows_all": norm["rows"],
+                       "data_rows": norm.get("data_rows") or [],
                        "markdown": norm["markdown"], "n_rows": norm["n_rows"],
-                       "n_cols": norm["n_cols"], "source": t.get("source", "engine")})
+                       "n_cols": norm["n_cols"],
+                       "multi_level_header": norm.get("multi_level_header", False),
+                       "source": t.get("source", "engine")})
+    tables = structure.merge_continuations(tables)
 
     figures = structure.find_figures(pages, tables=tables, blocks=blocks)
     structure.attach_captions(blocks, tables, figures)
     figures, figures_dropped = structure.prune_figures(figures)
     table_region_blocks = structure.mark_table_blocks(blocks, tables)
+    footnotes, margin_notes = structure.mark_notes(blocks, pages)
+    # Section detection ran before the table regions were known, so a cell that
+    # happens to look like "3.0 Contact" had already become a heading.  Rebuild
+    # now that those blocks carry `type=table` and are skipped.
+    sections, blocks = structure.build_sections(blocks, body)
     image_tables = find_image_tables(pages, blocks, tables, pdf_path=pdf_path)
 
     formulas = structure.find_formulas(blocks)
@@ -197,7 +219,7 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
             "backend": extracted["backend"],
             "attempts": extracted.get("attempts", []),
             "ocr_pages": ocr_done,
-            "has_text_layer": len(empty_pages) < max(1, len(pages) // 2),
+            "has_text_layer": had_text_layer,
             # A permissions-locked PDF (owner password, empty user password) is
             # readable; saying so keeps "encrypted" from being read as "failed".
             "encrypted": bool(extracted.get("encryption")
@@ -211,6 +233,8 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
         },
         "meta": meta,
         "sections": sections,
+        "footnotes": footnotes,
+        "margin_notes": margin_notes,
         "blocks": blocks,
         "tables": tables,
         "figures": figures,
@@ -224,6 +248,7 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
                         "w": p.get("width"), "h": p.get("height"),
                         "columns": p.get("columns", 1), "bands": p.get("bands", 1),
                         "gutters": p.get("gutters", []), "filled_by": p.get("filled_by"),
+                        "ocr_failed": p.get("ocr_failed"),
                         "order_rule": p.get("order_rule", "naive-y")}
                        for p in pages],
         "running_heads_removed": heads["count"],
@@ -530,16 +555,29 @@ def analyze(input_dir: str, ocr: bool = True) -> Dict[str, Any]:
                                           "sha256": sub["source"]["sha256"]})
             except Exception as exc:
                 doc["extra_pdfs"].append({"path": other, "error": f"{type(exc).__name__}: {exc}"})
+    elif man.get("primary_text"):
+        # No PDF, but the case is not empty: markdown, LaTeX, BibTeX, CSV and
+        # JSON are first-class inputs.  They become the same `document` model
+        # (blocks + sections + tables + references), so every composer works
+        # unchanged and evidence keeps its p01-bNNN anchors.
+        from . import textdoc
+        doc["document"] = textdoc.analyze_text(input_dir, man, case, task)
+        doc["quality"] = doc["document"]["quality"]
+    if doc["document"]:
+        doc["materials"] = dict(doc["document"].pop("_materials", {}) or {})
     for role, paths in man["by_role"].items():
         if role in {"pdf", "image"}:
             continue
         for p in paths[:12]:
+            name = os.path.basename(p)
+            if name in doc["materials"]:
+                continue
             try:
                 txt = sources.read_text(p)
             except Exception as exc:
                 txt = f"<unreadable: {exc}>"
-            doc["materials"][os.path.basename(p)] = {"role": role, "chars": len(txt),
-                                                     "text": txt[:200_000]}
+            doc["materials"][name] = {"role": role, "chars": len(txt),
+                                      "text": txt[:200_000]}
     return doc
 
 

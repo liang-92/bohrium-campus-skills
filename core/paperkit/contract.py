@@ -46,6 +46,46 @@ ARRAY, OBJECT, STRING, NUMBER, BOOLEAN, UNKNOWN = (
 CONTRACT_KEYS = {"output_contract", "outputContract", "output_schema",
                  "outputs", "contract", "expected_output"}
 
+# The two contract families seen in real cases:
+#   (a) flat:   output_contract: {"tables": "list", "status": "complete|partial|unable"}
+#   (b) nested: output_contract: {"result_json": {"required_fields": [...],
+#                                                 "status_enum": [...]},
+#                                 "required_files": [...]}
+# The nested one describes the *result envelope*, not paper nouns; treating its
+# first-level keys as fields is how a runner ends up answering `result_json`
+# instead of the paper.
+STAGE_KINDS = {
+    "case_id": STRING, "status": STRING, "main_result": OBJECT,
+    "deliverables": OBJECT, "fact_source_map": ARRAY, "version_boundary": OBJECT,
+    "change_log": ARRAY, "evidence": ARRAY, "uncertainty": OBJECT,
+    "rules": ARRAY, "required_files": ARRAY,
+}
+
+
+def stage(case: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    """Read the nested `result_json` envelope contract, if the case uses one."""
+    oc = (case or {}).get("output_contract")
+    if not isinstance(oc, dict):
+        return None
+    rj = oc.get("result_json")
+    if not isinstance(rj, dict) or not rj.get("required_fields"):
+        return None
+    names = [str(x) for x in rj.get("required_fields") or [] if str(x).strip()]
+    enum = [str(x) for x in (rj.get("status_enum") or []) if str(x).strip()] \
+        or ["success", "partial", "unable"]
+    fields = []
+    for n in names:
+        f = Field(n, kind=STAGE_KINDS.get(n, UNKNOWN))
+        if n in {"status", "run_status"}:
+            f.enum = enum
+        fields.append(f)
+    return {"fields": fields, "names": names, "enum": enum,
+            "required_files": [str(x) for x in (oc.get("required_files") or [])],
+            "rules": [str(x) for x in (oc.get("rules") or [])],
+            "evidence_item": rj.get("evidence_item") or {},
+            "status_map": {"complete": "success", "partial": "partial",
+                           "unable": "unable", "success": "success"}}
+
 
 # --------------------------------------------------------------------------- #
 # 1. read the contract
@@ -130,6 +170,10 @@ def _field_from(name: str, spec: Any) -> Field:
 
 def spec(case: Dict[str, Any], doc: Dict[str, Any] | None = None) -> List[Field]:
     """Every field the case declares, in declaration order."""
+    case = case or (doc or {}).get("case") or {}
+    st = stage(case)
+    if st:
+        return st["fields"]
     out: Dict[str, Field] = {}
 
     def walk(node: Any, depth: int = 0):

@@ -355,7 +355,7 @@ def audit_independent(doc: Dict[str, Any], pdf_path: str = "") -> Dict[str, Any]
         # A merged cell ("BLEU EN-DE EN-FR") is several columns joined, so the
         # whole string need not appear contiguously; the fair test is that every
         # token is on the page.  The strict, contiguous count is kept separately
-        # so the weaker test cannot hide a fabricated cell.
+        # so the weaker test cannot hide a cell that is not on the page.
         cells = strict = located = 0
         bad: List[str] = []
         for t in d.get("tables") or []:

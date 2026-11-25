@@ -1,0 +1,103 @@
+{
+  "abstract": "产品赛第 06 道题目的预留占位，内容待补充。",
+  "armiId": "ARMI:2611.000028v6",
+  "attempts": 850,
+  "benchmarkId": null,
+  "content": "### 文献总结与结构化笔记：科研阅读：回答问题，也给出依据\n\n#### 1. 题目介绍\n\n你需要围绕“文献总结与结构化笔记”制作一个可被 Agent 调用的 Skill，在组织方提供的 3 个固定科研案例上完成实际任务，并交付能够被复核的结果。  \n读取固定科研材料并完成本题指定的解析、翻译、问答、提取、核验或知识结构化，关键结果回到原文证据。\n\n组织方为本题准备 3 个固定案例。每个案例包含任务说明、科研材料、必要的输入约束和评分所需的证据范围；案例会以相同内容分别交给基础 Agent 和加载参赛 Skill 的 Agent。你不需要自带正式测试案例，也不需要提交预先写好的答案。\n\n1. 先识别输入材料和问题边界。\n2. 按题目要求完成阅读或解析动作。\n3. 为关键结论保留页码、段落、字段或图表定位。\n4. 对未报告、无法判断和材料冲突明确说明。\n\n围绕真实论文，开发能够保留研究结构、关键证据和限制条件，并输出可继续复用笔记的 Skill，重点改善章节对齐、字段化整理、知识点提取与来源回链。  \n参赛者可以选择结构化论文卡片、章节摘要、知识点清单、证据链接、可检索笔记等具体方向进行突破，允许只聚焦一个问题，不要求开发完整的文献总结与结构化笔记系统。鼓励从基础 Agent 在真实论文上的失败案例出发，通过开发与评测证明实际改善。  \n本课题重点关注四个问题：  \n对得上： 摘要与笔记的骨架是否与论文自身的章节和论证顺序一致，而不是套用通用摘要模板。留得住： 研究问题、数据、方法条件、主要发现和局限是否都被记录，尤其是让结论成立的前提条件。找得回： 每条关键笔记能否指回原文的具体章节、段落、页码或图表，而不是只给一个笼统出处。用得上： 笔记是否可检索、可比较、可继续加工，能被下一次阅读或写作直接使用。\n\n可选择的突破方向：  \n优先考虑以下五个方向，也允许提出其他具有明确阅读价值的笔记问题。  \n章节总结： 按论文原有章节提炼目的、方法、结果和结论，避免脱离结构的通篇摘要，并保留章节之间的承接关系。论文卡片： 用统一字段记录研究问题、数据、方法、主要发现和局限，使同一领域的多篇论文可以并排比较。知识点提取： 把重要概念、变量、方法和结论拆成可检索的条目，处理术语、缩写和同义表述，避免条目重复或彼此矛盾。来源保留： 每个关键笔记都能回到原文位置，锚点粒度与可核验性匹配，支持后续核验和更新。结果复核与复用： 优先选择能够回到原文、可重复运行且方便其他用户复用的任务，明确哪些字段可由机器判定、哪些必须人工确认。  \n参赛者只需要选择一个明确问题，形成能够真实运行、独立验证、持续改进的最小成果。\n\n平台固定运行 3 个案例，比较不加载 Skill 与加载参赛 Skill 时的实际结果。双方使用相同案例输入、任务要求和可比条件；需要相对比较的评分项使用组织方预先固定的白板。白板是对照结果，不是参赛者答案。\n\n#### 2. 评分维度概要\n\n原题满分 **100 分**。GitHub 公开作品链接为额外附加分，最高加 **5 分**。综合三个固定案例的实际表现和提交材料评分，各评分项只计一次；本节只展示评分维度、分值和考察内容，不展示内部详细分档。\n\n| 评分维度 | 分值 | 评分点及分值 | 考察内容 |\n|-|-|-|-|\n| 实际效果 | 40 分 | 任务完成度 15 分；结果正确性 15 分；结果完整性 5 分；结果可核验性 5 分 | 是否真的把一篇真实论文变成与章节对应、字段齐备、可继续使用的笔记，而不是一段压缩后的通读摘要。；笔记中的论断、数值、变量与方法条件是否与原文一致，锚点是否指向真正对应的位置。；是否覆盖论文的关键章节与要素，包括研究问题、数据、方法、结果、结论、限制。；每条关键笔记能否按锚点回到原文，章节切分与抽取过程能否被独立复核。 |\n| 使用增益 | 25 分 | 质量增益 15 分；效率增益 5 分；增益可验证性 5 分 | 相同论文、相同解析方式和相同条件下加载成果后，笔记的结构性与可靠性是否优于基础 Agent。；是否减少单篇论文的整理耗时、人工补写、返工与重试。；是否用同论文集合、同解析方式、同预算的公平对照证明改善。 |\n| 创新增益 | 15 分 | 新增能力 5 分；方法改进 5 分；创新证据 5 分 | 是否形成基线不具备或难以稳定实现的章节对齐、字段化、锚点回链与可检索笔记能力。；章节切分、字段抽取、知识点归并与锚点校验的方法是否带来实质改进。；是否证明创新点相对已有摘要方案或笔记模板的边界与价值。 |\n| 可靠体验 | 10 分 | 调用与易用性 3 分；运行稳定性 4 分；异常处理 3 分 | Agent 是否能正确触发，用户是否能按说明完成一次“给论文、出笔记”。；在不同论文类型、篇幅和重复运行下能否持续产出可用笔记。；对扫描件、加密或权限受限文档、双栏错序、图表公式缺失、超长文、非中文论文等情况的识别与处置。 |\n| 生态贡献 | 10 分 | 文档完整性 3 分；资源可复用性 4 分；分享推广价值 3 分 | 使用说明、字段字典、锚点格式、依赖、示例、适用范围与维护信息是否齐全。；Skill 本体、脚本、字段模板、题集、解析配置与示例笔记能否被他人复用。；是否沉淀可分享的论文案例、笔记模板、Benchmark 与真实使用经验。 |\n\n质量与增益以平台固定案例、基础 Agent/Skill Agent 对照结果和可核验记录为依据；文字自述不能替代实际运行证据。\n\n**GitHub 公开作品链接（5 分）**　提交本题作品的 GitHub 公开链接。评审无需登录即可打开链接并找到本次提交的作品，得 5 分。缺交或经核实链接无效，本项得 0 分，其他评分项按原规则计分。\n\n#### 3. 交付要求\n\n**提交材料**\n\n参赛者只提交 Skill 及其必要资源；平台统一使用本题固定的 3 个案例运行 Skill。\n\n| 材料 | 必需内容 | 交付标准 |\n|-|-|-|\n| Skill 本体 | `SKILL.md`，以及实际使用的提示、规则或处理流程；写清用途、适用条件、调用方式、输入输出和异常处理。 | 平台能据此加载并执行给定案例，不能用预制答案代替实际运行。 |\n| 运行必需的脚本与资源 | 实际依赖的脚本、配置、模板、词表或其他资源；写清版本、安装方式、路径、来源和使用条件。 | 文件齐备、路径有效，不依赖作者未说明的个人文件或手工操作。 |\n| 使用与方法说明 | 完整调用步骤、输入输出解释、关键方法、适用场景、限制、失败处理和自查方法。 | 其他人或 Agent 可按说明独立使用，说明与提交版本一致。 |\n| 最小调用示例 | 至少一组输入、调用方式和示意输出；示意输出须标明为示例。 | 足以说明接口和完整使用流程，不冒充正式案例结果。 |\n\n**Skill 运行后的输出要求**\n\n每个案例返回一份结构化结果，保留输入标识、主结果、证据/来源定位、运行状态和不确定性。\n\n| 内容 | 字段与要求 |\n|-|-|\n| 阅读/解析结果 | 按题目要求的答案、结构化字段、翻译或知识结构；完成标准：覆盖任务要求且能回到材料定位 |\n| 证据与边界 | 页码、段落、图表、字段或公式位置；未报告和不确定项；完成标准：关键结论可复核，无法判断不被写成事实 |\n| 运行状态 | 成功、部分完成、无法判断或拒答及原因；完成标准：异常原因和可人工接管位置清楚 |\n\n正式测试案例、白板和测评结果由平台提供或生成，参赛者无须另交三个测试案例、白板或预先生成的正式答案。材料缺失、无法判断和运行失败要分别说明。\n\n**本题作品的 GitHub 公开链接**　请在提交材料中填写作品所在的 GitHub 仓库、目录或文件链接。如一个仓库包含多个作品，请直接链接到本题作品所在位置，或在链接旁注明目录或文件名。提交前请用未登录 GitHub 的浏览器窗口打开一次，确认能看到作品。\n\n请在提交目录根路径放置 `GITHUB_URL.txt`，第一行写 GitHub 链接。如需指定作品文件，可在第二行写本次提交目录中的相对文件路径。\n\n## Harbor技术提交约定\n\n# Runtime contract\nThis is a Skill authoring task. Create /app/submission/SKILL.md and any required text resources. Use valid name/description YAML frontmatter. Do not submit prepared answers or formal test outputs. The evaluator installs the actual Skill under /skills/weekly-skill, then runs official DeepSeek Harness on each fixed original case.\n\nAt execution time original input is /input/case.json and task.md. Material and artifacts are provided according to the topic; PDF parsing receives the actual PDF without a pre-extracted answer layer. Read actual files instead of assuming source content from labels. Work under /app/work; final actual results and editable artifacts belong under /app/output, including result.json with all original output_contract fields and case_id. Include honest status, sources, uncertainty and change records. Editable Office/slide/diagram outputs should also have real rendered PDF/PNG previews for inspection. A partial result must identify its limits. Do not fabricate missing software state or scientific data.\n\nModel, source/case versions, runtime, budgets and actual native traces are recorded by the platform; do not invent benchmark scores. Execution budget: 64 model requests, 900 seconds, 16384 tokens per response including reasoning. Save honest partial deliverables early and improve incrementally. Three cases, three repetitions per condition; actual service failures are paused separately. The platform provides/generates any required comparison; participants do not provide hidden tests or whiteboards. Skill resources: at most 50 UTF-8 text files, 500KB each and 2MB total, no symlinks. Runtime artifacts may be binary and are retained independently of final JSON validity.\n\n实际输入文件和原论文是事实依据；不依据错误的领域标签补造数据。\n\n\nResource entry point: environment/resources.yaml. Bundled files are relative to that directory; declared preinstalled runtime paths describe the pinned image. The actual fixed scientific cases are supplied by the evaluation platform.\n\n\n---\n\n题面已公开，正式提交开放时间以赛事通知为准。\n",
+  "contentGated": false,
+  "datasets": [],
+  "difficulty": 1,
+  "disc": "science",
+  "figureData": {
+    "basePath": "figures/product-arena-06-6d8cf72b",
+    "figures": []
+  },
+  "figures": [
+    0,
+    0
+  ],
+  "hackathon": null,
+  "hackathonSeasonId": null,
+  "hasContent": true,
+  "id": "product-arena-06-6d8cf72b",
+  "origin": "community",
+  "resources": [
+    {
+      "kind": "data",
+      "name": "interface-example"
+    },
+    {
+      "kind": "document",
+      "name": "execution-contract"
+    },
+    {
+      "kind": "tool",
+      "name": "scientific-python"
+    },
+    {
+      "kind": "document",
+      "name": "scientific-tools-provenance"
+    },
+    {
+      "kind": "tool",
+      "name": "official-deepseek-harness"
+    },
+    {
+      "kind": "tool",
+      "name": "pdf-text-tool"
+    },
+    {
+      "kind": "tool",
+      "name": "pdf-render-tool"
+    },
+    {
+      "kind": "tool",
+      "name": "ocr-tool"
+    },
+    {
+      "kind": "tool",
+      "name": "latex-compiler"
+    },
+    {
+      "kind": "tool",
+      "name": "office-renderer"
+    },
+    {
+      "kind": "tool",
+      "name": "browser-automation"
+    },
+    {
+      "kind": "tool",
+      "name": "font-discovery"
+    }
+  ],
+  "reviewStatus": "approved",
+  "roundEndAt": null,
+  "roundId": null,
+  "roundSeq": null,
+  "roundStartAt": null,
+  "scoring": {
+    "expected_metrics": [],
+    "formula_summary": "No automated scoring; reviewers grade attempts manually.",
+    "grader_name": null,
+    "protocol_url": "/api/protocol",
+    "score_range": [
+      0,
+      100
+    ],
+    "strategy": "human_review_only"
+  },
+  "stars": 0,
+  "status": "open",
+  "submittedBy": "mingjunxu-dpa",
+  "tags": [
+    "product-arena",
+    "skills",
+    "harbor",
+    "reading",
+    "reading-10"
+  ],
+  "title": "阅读10｜文献总结与结构化笔记",
+  "title_zh": "阅读10｜文献总结与结构化笔记",
+  "visibility": "public"
+}

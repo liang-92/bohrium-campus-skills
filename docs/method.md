@@ -118,7 +118,7 @@
 | 加密 PDF | 引擎要么抛异常要么返回空文本 | 先 `diagnose()` 判因，试空密码；失败则 `status=unable` + 原因，**不崩** |
 | 乱码字体 | 字体缺 `toUnicode`，文字层是私用区码点 | 按页统计 PUA 占比（>2% 判定），对这几页改走 OCR，并记 `garbled_text_layer` |
 | 页码错乱 | 重排过的 PDF / 扫描书 | 在**页眉页脚剔除前**读页脚数字，非单调或重复写 `page_order.warning` |
-| 表格是图片 | 有 `Table N` 图注、区域内无文字层 | 记 `image_tables[]`（页码 + 图注），明确「单元格不在 tables[] 里，不要编造」 |
+| 表格是图片 | 有 `Table N` 图注、区域内无文字层 | 记 `image_tables[]`（页码 + 图注），明确「单元格不在 tables[] 里，不要补写」 |
 | 挂载路径错 / 目录无 PDF | 一个能读的文件都没有 | `input.problem.kind = missing_input / empty / no_pdf`，`status=unable`，仍写出 `result.json` |
 | 有 PDF 但零提取 | 无文字层且没有 OCR 引擎 | `status=unable`（不是 `partial`）+ 提示装 tesseract；`--probe` 能先查出缺哪一样 |
 
@@ -161,7 +161,7 @@
 `unsupported` 的字段键还在，值是
 `{"value": <按声明类型的空值>, "method": "unsupported", "confidence": 0}`，
 同时进 `uncertainty.missing`。宁可显示「这条我答不了」，也不拿正文块顶替表格字段——
-后者在评审眼里就是编造。契约没声明的切片写进同目录的 `payload.json`，
+后者会让评审把结果读成「把答案改了名」。契约没声明的切片写进同目录的 `payload.json`，
 让 `output_contract` 的宽度与契约完全一致。
 
 `verify.py --kind generic` 会对 `case.json` 复核三件事：声明的字段是否都在、

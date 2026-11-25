@@ -107,7 +107,7 @@ python3 scripts/verify.py --out /app/output --kind generic
         "failure": """| 情况 | 处置 |
 |---|---|
 | 扫描件无文字层 | 自动 OCR；OCR 页写入 `source.ocr_pages`，置信度无法保证时在 `uncertainty` 注明 |
-| 加密/损坏 PDF、目录里没有 PDF | 捕获异常，`status: unable` + `input.problem`，写明原因，不伪造文本，仍写出 `result.json` |
+| 加密/损坏 PDF、目录里没有 PDF | 捕获异常，`status: unable` + `input.problem`，写明原因，不生成文本，仍写出 `result.json` |
 | 有 PDF 但零提取（无文本层且无 OCR） | `status: unable`，不是 `partial`——零提取不宣称「读到了一半」；先跑 `--probe` 看缺哪个引擎 |
 | 表格识别为空 | 用行间隙兜底；仍为空则在 `coverage.issues` 说明“该页无表格或引擎不支持” |
 | 表格只有横线（无竖线） | 先走 `strategy="text"` 重建列；列仍错位则保留原行文本并标 `table_uncertain`，不输出假的“整齐表格” |
@@ -181,7 +181,7 @@ python3 scripts/verify.py --out /app/output --kind translate    # 译后核验
 | 术语表冲突 | 以首次出现并在标题/摘要中使用的译名为准，其余全部改齐 |
 | 公式/符号无法翻译 | 原样保留，前后文用中文衔接，不改写公式 |
 | 原文本身残缺（PDF 丢字） | 译文中用 `[原文缺失]` 标注，不猜测 |
-| 扫描件/乱码页无正文 | 该页不进分段，`notes` 说明跳过原因，不编造译文 |""",
+| 扫描件/乱码页无正文 | 该页不进分段，`notes` 说明跳过原因，不补写译文 |""",
         "limits": "不润色原文、不补写原文没有的内容；诗歌、广告等非学术文体不在适用范围。",
     },
     {
@@ -406,7 +406,7 @@ python3 scripts/run.py --input /input --out /app/output --profile polish
         "when": [
             "任务要求检查/整理参考文献、正文引用与文末列表是否一致",
             "需要编号更新、去重、格式转换（GB/T 7714、APA、BibTeX）",
-            "怀疑有编造条目、重复条目、引用错位",
+            "怀疑条目并不存在、重复、引用错位",
         ],
         "method": """引用管理的核心是“集合运算 + 字段核对”。
 
@@ -422,7 +422,7 @@ python3 scripts/run.py --input /input --out /app/output --profile polish
    **按类型分支**：期刊 `[J]` 出卷(期): 页；会议 `[C]` 用 `//会议名` 前缀；
    图书 `[M]`、电子资源 `[EB/OL]` 各自成式；BibTeX 对应 `@article/@inproceedings/@book/@misc`，
    `booktitle` 与 `journal` 不混用。BibTeX citation key 由「第一作者姓氏 + 年份 + 标题首个实词」生成，稳定可复现。
-   字段缺失处留空而不是编造。
+   字段缺失处留空，不补写。
 6. **可疑条目**：无年份、无 venue、标题异常、DOI 形态不合法，单独列出待人工核验。""",
         "bench": """| 用例 | base（纯文本转储） | skill | delta |
 |---|---|---|---|

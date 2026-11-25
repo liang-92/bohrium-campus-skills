@@ -505,7 +505,7 @@ def main():
 
 核对本目录 `paper.pdf` 的正文引用与文末列表：
 找出「引了但没有条目」「有条目但没被引用」「重复条目」「编号缺口」，
-并输出 GB/T 7714、APA、BibTeX 三种格式。缺失字段留空，不编造 DOI。""",
+并输出 GB/T 7714、APA、BibTeX 三种格式。缺失字段留空，不补写 DOI。""",
                gold_pdf, {"citations_without_entry": ["5"], "entries_never_cited": ["4"],
                           "duplicate_pair": ["2", "4"], "entries": 4,
                           "gbt_has_type_marker": True, "bibtex_has_inproceedings": True})
@@ -573,7 +573,7 @@ def main():
                """### 异常：加密 PDF
 
 本目录 `paper.pdf` 已加密且未提供口令。请如实报告无法解析（`status: unable`），
-写明原因与可人工接管的位置，不得编造任何正文内容。""",
+写明原因与可人工接管的位置，不写入正文内容。""",
                enc, {"expect_status": ["unable", "partial"], "must_not_have_text": True})
 
     img = os.path.join(HERE, "_build_imageonly.pdf")
@@ -596,7 +596,7 @@ def main():
                """### 异常：损坏文件
 
 本目录 `paper.pdf` 是损坏的 PDF。请捕获解析失败，输出 `status: unable` 与 `input.problem`，
-仍然写出合法的 `result.json`，不要伪造文档结构。""",
+仍然写出合法的 `result.json`，不要生成文档结构。""",
                corrupt, {"expect_status": ["unable"], "result_must_exist": True})
 
     write_case("x04-nopdf", "self-ex-nopdf", "阅读01 文献文档解析",

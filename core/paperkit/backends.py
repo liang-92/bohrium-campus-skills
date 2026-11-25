@@ -344,14 +344,13 @@ def _fitz_tables(path: str, pages: List[int] | None = None) -> List[Dict[str, An
             if not _page_has_table_hint(page):
                 continue
             try:
-                # Borderless academic tables line their columns up by text, not
-                # by rules.  `strategy="text"` finds those columns (13 instead of
-                # 3 on the Transformer variation table); the default strategy is
-                # kept as a fallback for older PyMuPDF builds that reject the kw.
+                # Borders first: an engine cell grid is the most reliable source
+                # for merged headers and cross-page continuation tables.  Only
+                # borderless pages fall back to the text-column strategy.
                 try:
-                    finder = page.find_tables(strategy="text")
+                    finder = page.find_tables()
                     if not getattr(finder, "tables", None):
-                        finder = page.find_tables()
+                        finder = page.find_tables(strategy="text")
                 except TypeError:
                     finder = page.find_tables()
             except Exception:
@@ -737,6 +736,22 @@ def ocr_image(png: bytes, lang: str = "eng") -> str | None:
                 proc = subprocess.run([exe2, img], capture_output=True, timeout=300)
                 if proc.returncode == 0:
                     return proc.stdout.decode("utf-8", "replace")
+            except Exception:
+                pass
+        # Windows 10/11 ships an OCR engine; on this machine tesseract is absent
+        # but `Windows.Media.Ocr` recognises both English and Chinese.
+        ps = shutil.which("powershell.exe") or shutil.which("pwsh")
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "win_ocr.ps1")
+        if ps and os.path.exists(script):
+            win_lang = "zh-Hans-CN" if str(lang).lower().startswith(("chi", "zh")) else "en-US"
+            try:
+                proc = subprocess.run(
+                    [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+                     "-Path", img, "-Lang", win_lang],
+                    capture_output=True, timeout=180)
+                text = proc.stdout.decode("utf-8", "replace").strip()
+                if proc.returncode == 0 and len(text) >= 20:
+                    return text
             except Exception:
                 pass
     return None

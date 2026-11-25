@@ -146,7 +146,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 | `figures[].caption` / `caption_block` / `caption_bbox` | 图注原文、图注块 id、图注位置（`below`/`above`）|
 | `figures_dropped[]` | 被判定为子图或装饰的块，附 bbox 与理由（不静默丢弃）|
 | `tables[].rows` / `n_rows` / `n_cols` | 单元格内容与行列数，`in_table` 标出正文块属于哪张表 |
-| `image_tables[]` | 只有图片、没有文字层的表格：给出页码与图注，明确「单元格不在 `tables[]` 里，不要编造」|
+| `image_tables[]` | 只有图片、没有文字层的表格：给出页码与图注，明确「单元格不在 `tables[]` 里，不要补写」|
 
 `coverage.json` 把异常单独记下来，而不是让它们影响正文而不留痕：
 
@@ -185,7 +185,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 ## 怎么证明它比不加载更好（对照协议）
 
 评分项要的是「加载 Skill 的 Agent vs 不加载的 Agent」。本 Skill 不含模型调用，
-也不编造模型运行记录。能离线做的那一半已经做了，脚本与结果都在仓库里：
+能离线做的那一半已经做了，脚本与结果都在仓库里：
 
 | 用例 | base（纯文本转储） | skill | delta |
 |---|---|---|---|
@@ -242,7 +242,7 @@ python3 scripts/verify.py --out /app/output --kind generic
 | 情况 | 处置 |
 |---|---|
 | 扫描件无文字层 | 自动 OCR；OCR 页写入 `source.ocr_pages`，置信度无法保证时在 `uncertainty` 注明 |
-| 加密/损坏 PDF、目录里没有 PDF | 捕获异常，`status: unable` + `input.problem`，写明原因，不伪造文本，仍写出 `result.json` |
+| 加密/损坏 PDF、目录里没有 PDF | 捕获异常，`status: unable` + `input.problem`，写明原因，不生成文本，仍写出 `result.json` |
 | 有 PDF 但零提取（无文本层且无 OCR） | `status: unable`，不是 `partial`——零提取不宣称「读到了一半」；先跑 `--probe` 看缺哪个引擎 |
 | 表格识别为空 | 用行间隙兜底；仍为空则在 `coverage.issues` 说明“该页无表格或引擎不支持” |
 | 表格只有横线（无竖线） | 先走 `strategy="text"` 重建列；列仍错位则保留原行文本并标 `table_uncertain`，不输出假的“整齐表格” |

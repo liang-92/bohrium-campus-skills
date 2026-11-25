@@ -61,7 +61,7 @@ def section_level(block: Dict[str, Any], body_size: float) -> int:
     m = HEADING_NUM.match(text)
     if m:
         return min(6, m.group(1).count(".") + 1)
-    if re.match(r"^(abstract|摘要)\b", text, re.I):
+    if re.match(r"^(abstract|摘要|keywords?|key\s*words?|关键词)\b", text, re.I):
         return 1
     if re.match(r"^(references|bibliography|参考文献|acknowledg)", text, re.I):
         return 1
@@ -88,7 +88,10 @@ def merge_heading_fragments(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]
         b = blocks[i]
         nxt = blocks[i + 1] if i + 1 < len(blocks) else None
         if (nxt and BARE_NUMBER.match(b["text"]) and len(nxt["text"]) < 100
-                and b["page"] == nxt["page"] and (nxt.get("size") or 0) >= (b.get("size") or 0) * 0.9):
+                and b["page"] == nxt["page"] and (nxt.get("size") or 0) >= (b.get("size") or 0) * 0.9
+                and nxt.get("type") != "heading"
+                and not CAPTION_TABLE.match(nxt["text"])
+                and not CAPTION_FIG.match(nxt["text"])):
             merged = dict(nxt)
             merged["text"] = b["text"].strip() + " " + nxt["text"].strip()
             merged["bbox"] = [min(b["bbox"][0], nxt["bbox"][0]), min(b["bbox"][1], nxt["bbox"][1]),
@@ -101,9 +104,94 @@ def merge_heading_fragments(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return out
 
 
+def split_tail_headings(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Recover a section heading swallowed by the last row of a table.
+
+    A heading that sits immediately under a table is often merged into the
+    table's final cell, e.g. ``1.98 3.1 Interfacial structure``.  The prefix is
+    the table value, the tail is a numbered heading; keeping both as one body
+    block hides a whole section (R01-C01 lost ``3.1`` this way).
+    """
+    out: List[Dict[str, Any]] = []
+    for b in blocks:
+        if b.get("type") != "body":
+            out.append(b)
+            continue
+        t = (b.get("text") or "").strip()
+        m = re.match(r"^(?P<prefix>[^A-Za-z]{0,12}\d[\d.,]*)\s+"
+                     r"(?P<num>\d{1,2}(?:\.\d{1,2}){1,3})\s+"
+                     r"(?P<title>[A-Z][A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+){0,6})$", t)
+        if not m or len(m.group("title")) < 8:
+            out.append(b)
+            continue
+        body = dict(b)
+        body["id"] = b["id"] + "t"
+        body["text"] = m.group("prefix").strip()
+        body["text_raw"] = body["text"]
+        body["lines"] = 1
+        head = dict(b)
+        head["id"] = b["id"] + "h"
+        head["text"] = f"{m.group('num')} {m.group('title')}"
+        head["text_raw"] = head["text"]
+        head["type"] = "heading"
+        head["lines"] = 1
+        head["size"] = (b.get("size") or 10.0) + 1
+        out.extend([body, head])
+    return out
+
+
+def merge_line_fragments(blocks: List[Dict[str, Any]], body_size: float) -> List[Dict[str, Any]]:
+    """Rejoin prose that the layout pass emitted one visual line at a time.
+
+    Two-column PDFs and short last lines otherwise become separate blocks: the
+    text survives, but `0.9` and `percent` end up in different blocks and any
+    check for the measured value fails even though the words are present.  Only
+    unambiguous continuations are joined: same page/column/section, no sentence
+    punctuation at the old end, and the new line starts lowercase or with
+    punctuation that cannot begin a sentence.
+    """
+    out: List[Dict[str, Any]] = []
+    for b in blocks:
+        if b.get("type") != "body" or not out:
+            out.append(b)
+            continue
+        prev = out[-1]
+        if prev.get("type") != "body" or prev.get("page") != b.get("page") \
+                or prev.get("column") != b.get("column") \
+                or (prev.get("section") or "") != (b.get("section") or ""):
+            out.append(b)
+            continue
+        left = (prev.get("text") or "").rstrip()
+        right = (b.get("text") or "").lstrip()
+        if not left or not right:
+            out.append(b)
+            continue
+        if re.search(r"[.!?;:。！？；：]$", left):
+            out.append(b)
+            continue
+        if re.search(r"[A-Z0-9\u4e00-\u9fff]", right[:1]) and \
+                not re.match(r"^(and|or|but|which|that|where|when|because|with|for|of|to|in)\b",
+                             right, re.I):
+            out.append(b)
+            continue
+        if left.endswith("-"):
+            prev["text"] = left[:-1] + right
+            prev["text_raw"] = (prev.get("text_raw") or "") + right
+        else:
+            prev["text"] = left + " " + right
+            prev["text_raw"] = (prev.get("text_raw") or "") + " " + right
+        prev["bbox"][2] = max(prev["bbox"][2], b["bbox"][2])
+        prev["bbox"][3] = max(prev["bbox"][3], b["bbox"][3])
+        prev["order_rule"] = "merged-line"
+    return out
+
+
 def build_sections(blocks: List[Dict[str, Any]], body_size: float) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Annotate blocks with section paths; return (sections, blocks)."""
     blocks = merge_heading_fragments(blocks)
+    # The merge above can create `1.98 3.1 Interfacial structure` from a table
+    # tail and a heading fragment; split it again before section detection.
+    blocks = split_tail_headings(blocks)
     sections: List[Dict[str, Any]] = []
     stack: List[Dict[str, Any]] = []
     for b in blocks:
@@ -163,6 +251,8 @@ def _join_cell(text: str) -> str:
 
     PyMuPDF hands back "0\\n.\\n1" for 0.1 and "state-of-the-\\nart" for a wrapped
     word; a blind space-join turns those into "0 . 1" and "state-of-the- art".
+    A third case is a word split mid-morpheme by the column grid:
+    "Concentr\\nation" becomes "Concentr ation" unless the suffix is rejoined.
     """
     out = ""
     for line in (text or "").split("\n"):
@@ -173,8 +263,114 @@ def _join_cell(text: str) -> str:
             out = line
         elif line in _CELL_PUNCT or out.endswith("-"):
             out += line
+        elif _CELL_SUFFIX.match(line) and len(out) >= 3 and out[-1].isalpha():
+            out += line
         else:
-            out += " " + line
+            first, _, rest = line.partition(" ")
+            if first and _CELL_SUFFIX.match(first) and out[-1:].isalpha():
+                out += first + ((" " + rest) if rest else "")
+            else:
+                out += " " + line
+    return out
+
+
+_CELL_SUFFIX = re.compile(
+    r"^(ation|ations|al|ance|ence|ing|ed|ly|ic|ous|ive|ity|tion|sion|ment|"
+    r"ness|tance|ture|ships?|ers?|ance|graphy|metry)$", re.I)
+
+
+INLINE_HEAD = re.compile(r"^(Abstract|摘要|Keywords|关键词)\s*[:：]?\s+(.+)$", re.I)
+
+
+def split_inline_headings(blocks: List[Dict[str, Any]],
+                          body_size: float) -> List[Dict[str, Any]]:
+    """Split `Abstract The structure ...` into a heading and its body.
+
+    Many templates run the heading into the paragraph, at body size and without
+    bold.  A size/bold test cannot see it, so the words themselves are the only
+    signal; the paragraph text must survive as a body block.
+    """
+    out: List[Dict[str, Any]] = []
+    for b in blocks:
+        t = (b.get("text") or "").strip()
+        m = INLINE_HEAD.match(t) if b.get("type") == "body" else None
+        if not m or len(m.group(2)) < 25:
+            out.append(b)
+            continue
+        if (b.get("size") or body_size) > body_size * 1.12:
+            out.append(b)
+            continue
+        head = dict(b)
+        head["id"] = b["id"] + "h"
+        head["text"] = m.group(1).title() if m.group(1).isascii() else m.group(1)
+        head["text_raw"] = m.group(1)
+        head["type"] = "heading"
+        head["level"] = 1
+        head["size"] = (b.get("size") or body_size) + 1
+        head["lines"] = 1
+        body = dict(b)
+        body["id"] = b["id"] + "b"
+        body["text"] = m.group(2).strip()
+        body["text_raw"] = body["text"]
+        out.extend([head, body])
+    return out
+
+
+def split_ocr_sections(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Recover headings from a single OCR block that lost all line breaks.
+
+    OCR returns one slab per page, so a scanned paper otherwise has two blocks
+    and every heading is buried mid-string.  Split on the heading words that
+    survive OCR; the characters are preserved, only block boundaries change.
+    """
+    head = re.compile(
+        r"(?<![\w.])(?:\d{1,2}\s+(?:Introduction|Background|Methods?|"
+        r"Results(?:\s+and\s+Discussion)?|Discussion|Conclusions?|References)|"
+        r"Abstract\.|Table\s+\d+\.)", re.I)
+    out: List[Dict[str, Any]] = []
+    for b in blocks:
+        t = b.get("text") or ""
+        if b.get("engine") != "ocr" or len(t) < 220:
+            out.append(b)
+            continue
+        ms = list(head.finditer(t))
+        if len(ms) < 2:
+            out.append(b)
+            continue
+        cuts = [0] + [m.start() for m in ms] + [len(t)]
+        for i in range(len(cuts) - 1):
+            seg = t[cuts[i]:cuts[i + 1]].strip()
+            if not seg:
+                continue
+            hm = head.match(seg)
+            is_cap = bool(re.match(r"Table\s+\d+\.", seg, re.I))
+            if hm and not is_cap:
+                htext = hm.group(0).strip()
+                hb = dict(b)
+                hb["id"] = f"{b['id']}-s{i + 1}h"
+                hb["text"] = htext
+                hb["text_raw"] = htext
+                hb["type"] = "heading"
+                hb["level"] = 2
+                hb["size"] = (b.get("size") or 10.0) + 1.0
+                hb["lines"] = 1
+                out.append(hb)
+                rest = seg[len(hm.group(0)):].strip()
+                if rest:
+                    rb = dict(b)
+                    rb["id"] = f"{b['id']}-s{i + 1}b"
+                    rb["text"] = rest
+                    rb["text_raw"] = rest
+                    rb["type"] = "body"
+                    out.append(rb)
+                continue
+            nb = dict(b)
+            nb["id"] = f"{b['id']}-s{i + 1}"
+            nb["text"] = seg
+            nb["text_raw"] = seg
+            nb["type"] = "caption" if is_cap else "body"
+            nb["lines"] = max(1, len(seg.splitlines()))
+            out.append(nb)
     return out
 
 
@@ -200,23 +396,228 @@ def split_multiline_rows(rows: List[List[str]], max_split: int = 8) -> List[List
     return out
 
 
+_SEP_CELL = {"", "/", "|", "-", "–", "—", "·"}
+_DATA_LIKE = re.compile(r"^(?:[+\-−]?(?:\d+(?:\.\d+)?|\.\d+)|[A-Za-z]{0,5}\d|yes|no|true|false|n/a)$", re.I)
+
+
+def _drop_separator_columns(rows: List[List[str]]) -> List[List[str]]:
+    """Drop grid-rule columns that carried only `/`, `|` or blanks."""
+    if not rows:
+        return rows
+    width = max(len(r) for r in rows)
+    keep = []
+    for j in range(width):
+        vals = [(r[j] if j < len(r) else "").strip() for r in rows]
+        if any(v not in _SEP_CELL for v in vals):
+            keep.append(j)
+    if not keep:
+        return rows
+    return [[(r[j] if j < len(r) else "") for j in keep] for r in rows]
+
+
+def _data_like(cell: str) -> bool:
+    c = (cell or "").strip()
+    if not c:
+        return False
+    if _DATA_LIKE.match(c):
+        return True
+    if re.match(r"^[A-Za-z]{1,4}\d", c):
+        return True
+    return False
+
+
+def _header_row(row: List[str]) -> bool:
+    vals = [c.strip() for c in row if (c or "").strip()]
+    return len(vals) >= 2 and not any(_data_like(c) for c in vals)
+
+
+def _header_count(rows: List[List[str]]) -> int:
+    if not rows or not _header_row(rows[0]):
+        return 0
+    n = 1
+    if len(rows) > 1 and _header_row(rows[1]):
+        n = 2
+    return n if len(rows) > n else 0
+
+
+def _flatten_header(header_rows: List[List[str]], width: int) -> List[str]:
+    r0 = list(header_rows[0]) + [""] * (width - len(header_rows[0]))
+    r1 = (list(header_rows[1]) + [""] * (width - len(header_rows[1]))
+          if len(header_rows) > 1 else [""] * width)
+    filled: List[str] = []
+    last = ""
+    for j in range(width):
+        c = r0[j].strip()
+        if c:
+            last = c
+        elif r1[j].strip() or (j + 1 < width and r0[j + 1].strip()):
+            c = last
+        filled.append(c)
+    if filled and not filled[0] and r1[0].strip():
+        filled[0] = r1[0].strip()
+    out = []
+    for j in range(width):
+        group = filled[j].strip()
+        leaf = r1[j].strip()
+        if leaf and group and leaf.lower() != group.lower():
+            out.append(f"{group} / {leaf}")
+        else:
+            out.append(leaf or group)
+    return out
+
+
 def normalize_table(rows: List[List[str]], max_rows: int = 200, max_cols: int = 30) -> Dict[str, Any]:
     rows = split_multiline_rows([r[:max_cols] for r in rows[:max_rows]])
     rows = [[_join_cell(c).strip() for c in r] for r in rows][:max_rows]
+    rows = _drop_separator_columns(rows)
+    unique: List[List[str]] = []
+    seen = set()
+    for r in rows:
+        key = tuple(c.strip() for c in r)
+        if not any(key) or key in seen:
+            continue
+        seen.add(key)
+        unique.append(r)
+    rows = unique
     width = max((len(r) for r in rows), default=0)
     rows = [r + [""] * (width - len(r)) for r in rows]
-    header = rows[0] if rows else []
+    nhead = _header_count(rows)
+    header_rows = rows[:nhead] if nhead else (rows[:1] if rows else [])
+    header = _flatten_header(header_rows, width) if header_rows else []
+    data_rows = rows[nhead:] if nhead else rows[1:]
+    legacy_rows = ([header] + data_rows) if header else data_rows
 
     def esc(s: str) -> str:
         return s.replace("|", "\\|")
 
     md = []
-    if rows:
+    if header:
         md.append("| " + " | ".join(esc(c) for c in header) + " |")
         md.append("|" + "|".join(["---"] * width) + "|")
-        for r in rows[1:]:
+        for r in data_rows:
             md.append("| " + " | ".join(esc(c) for c in r) + " |")
-    return {"header": header, "rows": rows, "markdown": "\n".join(md), "n_rows": len(rows), "n_cols": width}
+    return {"header": header, "header_rows": header_rows, "data_rows": data_rows,
+            "rows": legacy_rows, "markdown": "\n".join(md),
+            "n_rows": len(data_rows), "n_cols": width,
+            "multi_level_header": nhead > 1}
+
+
+def _table_markdown(header: List[str], data_rows: List[List[str]]) -> str:
+    def esc(s: str) -> str:
+        return (s or "").replace("|", "\\|")
+    md = []
+    if header:
+        md.append("| " + " | ".join(esc(c) for c in header) + " |")
+        md.append("|" + "|".join(["---"] * len(header)) + "|")
+        for r in data_rows:
+            md.append("| " + " | ".join(esc(c) for c in r) + " |")
+    return "\n".join(md)
+
+
+def _header_sig(header: List[str]) -> Tuple[str, ...]:
+    return tuple(re.sub(r"[^a-z0-9]+", "", (c or "").lower()) for c in header)
+
+
+def _run_no(cell: str) -> int | None:
+    m = re.match(r"^\s*[A-Za-z]*(\d{1,3})\s*$", cell or "")
+    return int(m.group(1)) if m else None
+
+
+def merge_continuations(tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Join a table that continues on the next page instead of shipping two halves.
+
+    The second page repeats the header row; its rows belong to the same table.
+    Requiring the same column signature plus either a caption that says
+    "continues" or consecutive run numbers keeps two unrelated same-width tables
+    from being glued together.
+    """
+    out: List[Dict[str, Any]] = []
+    for t in tables:
+        if out:
+            prev = out[-1]
+            same_width = t.get("n_cols") == prev.get("n_cols") and t.get("header") == prev.get("header")
+            adjacent = int(t.get("page") or 0) == int(prev.get("page") or 0) + 1
+            cap = ((prev.get("caption") or "") + " " + (t.get("caption") or "")).lower()
+            says_continue = any(k in cap for k in ("continu", "续表", "接上页", "continued"))
+            pdata = prev.get("data_rows") or []
+            tdata = t.get("data_rows") or []
+            last_run = _run_no(pdata[-1][0]) if pdata and pdata[-1] else None
+            first_run = _run_no(tdata[0][0]) if tdata and tdata[0] else None
+            sequential = last_run is not None and first_run is not None and first_run == last_run + 1
+            if same_width and adjacent and (says_continue or sequential):
+                merged = []
+                seen = set()
+                for r in pdata + tdata:
+                    key = tuple((c or "").strip() for c in r)
+                    if not any(key) or key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(r)
+                prev["data_rows"] = merged
+                prev["rows"] = merged
+                prev["rows_all"] = ([prev["header"]] + merged) if prev.get("header") else merged
+                prev["n_rows"] = len(merged)
+                prev["markdown"] = _table_markdown(prev.get("header") or [], merged)
+                prev.setdefault("pages", [prev.get("page")])
+                if t.get("page") not in prev["pages"]:
+                    prev["pages"].append(t.get("page"))
+                # A continuation's own caption is already represented by the
+                # first caption; keeping both would duplicate the "Table 1" line.
+                continue
+        out.append(t)
+    return out
+
+
+FOOTNOTE_TEXT = re.compile(r"^(?:footnote|脚注)\s*([0-9]+|[A-Za-z])\s*[:：]\s*(.+)", re.I)
+
+
+def mark_notes(blocks: List[Dict[str, Any]], pages: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Separate footnotes and vertical margin notes from the body flow.
+
+    The parser used to leave `Footnote 1: ...` as an ordinary body paragraph,
+    and the deliverable then reported zero footnotes.  A margin note is a
+    vertical line in the outer margin; the running-head stripper now keeps it,
+    so it needs its own type and its own anchor instead of being spliced into a
+    paragraph.
+    """
+    widths = {p.get("number"): float(p.get("width") or 0) for p in pages}
+    footnotes: List[Dict[str, Any]] = []
+    margin_notes: List[Dict[str, Any]] = []
+    body_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    for b in blocks:
+        if b.get("type") == "body" and not b.get("in_table"):
+            body_by_page.setdefault(b.get("page"), []).append(b)
+    for b in blocks:
+        t = (b.get("text") or "").strip()
+        m = FOOTNOTE_TEXT.match(t)
+        if m:
+            b["type"] = "footnote"
+            b["marker"] = m.group(1)
+            b["note_text"] = m.group(2).strip()
+            anchor = _nearest_body(body_by_page.get(b.get("page"), []), b)
+            b["anchor_block"] = anchor.get("id") if anchor else ""
+            footnotes.append({"marker": m.group(1), "page": b.get("page"),
+                              "block": b.get("id"), "text": b["note_text"],
+                              "anchor_block": b.get("anchor_block")})
+            continue
+        width = widths.get(b.get("page")) or 0
+        x0, y0, x1, y1 = b.get("bbox") or [0, 0, 0, 0]
+        vertical = (y1 - y0) > (x1 - x0) * 2.5 and (y1 - y0) > 25
+        if vertical and width and x0 > width * 0.88:
+            b["type"] = "margin_note"
+            anchor = _nearest_body(body_by_page.get(b.get("page"), []), b)
+            b["anchor_block"] = anchor.get("id") if anchor else ""
+            margin_notes.append({"page": b.get("page"), "block": b.get("id"),
+                                 "text": t, "anchor_block": b.get("anchor_block"),
+                                 "orientation": "vertical"})
+    return footnotes, margin_notes
+
+
+def _nearest_body(candidates: List[Dict[str, Any]], note: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not candidates:
+        return None
+    y = (note.get("bbox") or [0, 0, 0, 0])[1]
+    return min(candidates, key=lambda b: abs(((b.get("bbox") or [0, 0, 0, 0])[1]) - y))
 
 
 def attach_captions(blocks: List[Dict[str, Any]], tables: List[Dict[str, Any]],
@@ -559,24 +960,38 @@ def find_references(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             start = i
     if start is None:
         return []
-    entries: List[Dict[str, Any]] = []
-    n = 0
+    candidates = []
     for b in blocks[start + 1:]:
         if re.match(r"^\s*(appendix|supplementary)", b["text"].strip(), re.I):
             break
-        text = b["text"].strip()
-        if not text:
-            continue
-        m = REF_ENTRY.match(text)
-        if m:
-            n += 1
-            entries.append({"n": n, "label": m.group(1), "text": text, "page": b["page"], "block": b["id"]})
-        elif entries and not re.search(r"\b(19|20)\d{2}\b", text[:120]):
-            entries[-1]["text"] += " " + text
-            entries[-1]["block"] += f"+{b['id']}"
-        else:
-            n += 1
-            entries.append({"n": n, "label": f"[{n}]", "text": text, "page": b["page"], "block": b["id"]})
+        if b["text"].strip():
+            candidates.append(b)
+    if not candidates:
+        return []
+    numbered = len(re.findall(r"\[\d{1,3}\]", " ".join(b["text"] for b in candidates))) >= 2
+    entries: List[Dict[str, Any]] = []
+    if numbered:
+        # A markdown input may put the whole bibliography in one block:
+        # "[1] ... [2] ... [3] ...".  Split on the next number marker, not on
+        # visual lines, or eight references become one.
+        for b in candidates:
+            text = b["text"].strip()
+            for part in re.split(r"(?=\[\d{1,3}\])", text):
+                part = part.strip()
+                if not part:
+                    continue
+                m = REF_ENTRY.match(part)
+                if m:
+                    entries.append({"n": len(entries) + 1, "label": m.group(1), "text": part,
+                                    "page": b["page"], "block": b["id"]})
+                elif entries:
+                    entries[-1]["text"] += " " + part
+                    entries[-1]["block"] += f"+{b['id']}"
+    else:
+        for b in candidates:
+            text = b["text"].strip()
+            entries.append({"n": len(entries) + 1, "label": f"[{len(entries) + 1}]",
+                            "text": text, "page": b["page"], "block": b["id"]})
     return entries
 
 

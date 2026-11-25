@@ -23,7 +23,7 @@
 paper-refs 对 case-single：41 条引用证据、`output_contract` 9 字段全填充、status=complete。
 
 **损坏 PDF（case-broken）**：`status=unable`，uncertainty 明确记录
-`FileDataError: Failed to open file ... as type pdf`，不伪造文档结构。
+`FileDataError: Failed to open file ... as type pdf`，不生成文档结构。
 这验证了「读不出来就如实标注，而不是靠猜补齐」的失败可见原则。
 
 ## 引擎降级对照（重要发现与修复）

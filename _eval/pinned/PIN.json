@@ -1,0 +1,20 @@
+{
+  "sha256": "e3199d034b80cc273c77635a05077246396e90dc69e1569c6b94c87c1bd2bdca",
+  "covers": "skills/ as of 2026-11-25 01:10 (the build that scores 38.8/40 in report.md section 10)",
+  "recipe": "sha256 over every non-.pyc file under the tree, sorted by path: update(rel_path + b'\\0' + sha256(content).hexdigest() + b'\\n')",
+  "note": "The earlier pin 1533c859... was taken at 22:40, before the pk/deliver.py and compose_all.py rewrite, and it covered the build whose scores are report.md sections 1-9 (mean effect 27.3). This directory was re-copied at 01:10, so that value no longer describes its contents; it is kept only as the label of the pre-fix build.",
+  "history": [
+    {
+      "sha256": "1533c85969917200afddd49a9dc9770194a9d531b801c5bbc4b6da79820ac252",
+      "at": "2026-11-24 22:40",
+      "describes": "pre-fix build: mean effect 27.3/40, 35/60 checks (report.md sections 1-9)",
+      "reproducible": "no -- the snapshot was overwritten at 01:10; those scores are the only record"
+    },
+    {
+      "sha256": "e3199d034b80cc273c77635a05077246396e90dc69e1569c6b94c87c1bd2bdca",
+      "at": "2026-11-25 01:10",
+      "describes": "current build: mean effect 38.8/40, 60/61 checks (report.md section 10)",
+      "reproducible": "yes -- matches skills/ byte for byte"
+    }
+  ]
+}

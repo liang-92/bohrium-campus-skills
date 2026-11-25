@@ -94,7 +94,11 @@ def strip_running_heads(pages: List[Dict[str, Any]]) -> Dict[str, Any]:
             in_margin = bottom < h * 0.085 or top > h * 0.925
             key = _norm_pattern(ln["text"])
             stamp = any(rx.match(ln["text"]) for rx in BOILERPLATE)
-            is_footer = stamp or vertical or (in_margin and (key in repeated or PAGE_NUMBER.match(ln["text"])))
+            # A vertical line in the outer margin is a margin note, not a
+            # running head.  Only a rotated line that also sits in the top/bottom
+            # margin (or matches a boilerplate stamp) is removed.
+            rotated_stamp = vertical and (in_margin or stamp)
+            is_footer = stamp or rotated_stamp or (in_margin and (key in repeated or PAGE_NUMBER.match(ln["text"])))
             if is_footer:
                 # the line is taken out of the flow but never thrown away: text,
                 # page and bbox all survive in header_footer[], so "the header is
@@ -262,15 +266,38 @@ def order_page(page: Dict[str, Any]) -> Dict[str, Any]:
     lines = page["lines"]
     gutters = find_gutters(page)
     ordered = _order_rec(lines)
+    # Some pages mix full-width headings with two body columns.  A gutter that
+    # cuts through the heading makes `find_gutters` reject the whole page and
+    # falls back to naive y-order, which interleaves the columns.  Detect the
+    # two dominant left margins and order left column first.
+    x0s = sorted(l["bbox"][0] for l in lines)
+    groups = []
+    for x in x0s:
+        if not groups or x - groups[-1][-1] > 12:
+            groups.append([x])
+        else:
+            groups[-1].append(x)
+    if len(groups) >= 2:
+        left_x, right_x = groups[0][0], groups[-1][0]
+        n_left = len([x for x in x0s if abs(x - left_x) <= 6])
+        n_right = len([x for x in x0s if abs(x - right_x) <= 6])
+        if n_left >= 4 and n_right >= 4 and right_x - left_x > page["width"] * 0.3:
+            mid = (left_x + right_x) / 2
+            left = [l for l in lines if l["bbox"][0] < mid]
+            right = [l for l in lines if l["bbox"][0] >= mid]
+            ordered = (sorted(left, key=lambda l: (round(l["bbox"][1], 1), l["bbox"][0])) +
+                       sorted(right, key=lambda l: (round(l["bbox"][1], 1), l["bbox"][0])))
+            page["columns"] = 2
+            page["order_rule"] = "column-split"
     for i, ln in enumerate(ordered):
-        ln["col"] = _column_of(ln, gutters)
+        ln["col"] = 0 if ln["bbox"][0] < (page["width"] / 2 if page.get("columns") == 2 else 1e9) else 1
         ln["seq"] = i
     page["lines"] = ordered
     page["gutters"] = [[a, b] for a, b in gutters]
-    page["columns"] = len(gutters) + 1 if gutters else 1
+    page["columns"] = page.get("columns") or (len(gutters) + 1 if gutters else 1)
     page["bands"] = 1
-    # Which rule produced this page's reading order -- part of the evidence.
-    page["order_rule"] = "xy-cut" if gutters else "naive-y"
+    if page.get("order_rule") != "column-split":
+        page["order_rule"] = "xy-cut" if gutters else "naive-y"
     return page
 
 
@@ -394,7 +421,13 @@ def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str
             size_now = ln.get("size") or body_size
             same_style = abs(size_prev - size_now) < max(0.8, body_size * 0.08)
             right = _right_edge(prev["bbox"][0], edges, p["width"] * 0.5)
-            short_prev = prev["bbox"][2] < right - max(10.0, size_prev * 2.2)
+            # `right` is the column edge, but justified text often stops a
+            # few points short of it.  Measure the column's own longest line:
+            # a 16 pt shortfall is ordinary justification, not a paragraph end.
+            same_col = [l for l in lines
+                        if abs(l["bbox"][0] - prev["bbox"][0]) <= 8]
+            column_right = max([l["bbox"][2] for l in same_col] or [right])
+            short_prev = prev["bbox"][2] < column_right - max(12.0, size_prev * 1.8)
             big_block = len(current) >= 12 or sum(len(l["text"]) for l in current) > 1200
             reason = ""
             if CAPTION_START.match(clean_text(ln["text"])):
@@ -464,6 +497,8 @@ def body_font_size(pages: List[Dict[str, Any]]) -> float:
 
 def is_heading(block: Dict[str, Any], body_size: float) -> bool:
     text = block["text"].strip()
+    if block.get("type") in {"table", "reference", "formula"}:
+        return False
     if not text or len(text) > 140:
         return False
     if block["lines"] > 3:
@@ -471,8 +506,20 @@ def is_heading(block: Dict[str, Any], body_size: float) -> bool:
     size = block.get("size") or body_size
     bigger = size >= body_size * 1.12
     numbered = bool(HEADING_NUM.match(text))
-    named = bool(re.match(r"^(abstract|introduction|related work|background|method(s|ology)?|"
-                          r"experiments?|results?|discussion|conclusions?|references|acknowledg(e)?ments?|"
-                          r"appendix|supplementary)\b", text, re.I))
+    # A table cell such as `0.7 C` is numbered but is not a section heading.
+    if numbered and re.match(r"^\d+(?:\.\d+)?\s+[A-Za-z]{1,2}$", text):
+        return False
+    # A caption can begin with a stray section number (`2 Table 1. ...`).
+    if numbered and re.match(r"^\d+(?:\.\d+)?\s+(?:table|figure|fig\.)", text, re.I):
+        return False
+    # `3.0 Error bars come from ...` is a table cell + body sentence that the
+    # two-column order joined; it is not a section title.
+    if numbered and len(text.split()) > 4 and re.search(
+            r"\b(come|comes|came|was|were|is|are|reported|measured|obtained|shown|from)\b",
+            text, re.I):
+        return False
+    named = bool(re.match(r"^(abstract|摘要|keywords?|key\s*words?|关键词|introduction|related work|"
+                          r"background|method(s|ology)?|experiments?|results?|discussion|conclusions?|"
+                          r"references|acknowledg(e)?ments?|appendix|supplementary)\b", text, re.I))
     short_line = SENT_END.search(text) is None and len(text) < 90
     return bool((bigger and short_line) or numbered or named) and not text.endswith(",")

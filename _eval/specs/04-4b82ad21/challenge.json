@@ -1,0 +1,103 @@
+{
+  "abstract": "产品赛第 04 道题目的预留占位，内容待补充。",
+  "armiId": "ARMI:2611.000026v5",
+  "attempts": 951,
+  "benchmarkId": null,
+  "content": "### 引言与相关工作写作：学术写作：完成产物，也保留来源\n\n#### 1. 题目介绍\n\n你需要围绕“引言与相关工作写作”制作一个可被 Agent 调用的 Skill，在组织方提供的 3 个固定科研案例上完成实际任务，并交付能够被复核的结果。  \n依据固定科研材料完成指定的学术写作、修改、格式、引用、双语或结构化写作产物，保持事实和来源一致。\n\n组织方为本题准备 3 个固定案例。每个案例包含任务说明、科研材料、必要的输入约束和评分所需的证据范围；案例会以相同内容分别交给基础 Agent 和加载参赛 Skill 的 Agent。你不需要自带正式测试案例，也不需要提交预先写好的答案。\n\n1. 读取事实底稿、受众、文体和格式约束。\n2. 完成指定的生成、改写、校对或结构化动作。\n3. 为事实、数字和引用保留来源或修改记录。\n4. 对材料不足、冲突和需要人工确认的内容明确标注。\n\n围绕一个真实、高频、具有明确输入和输出的引言与相关工作写作任务，开发能够被 Agent 调用的 Skill，解决现有科学空间在该任务上的实际问题。  \n参赛者可以选择与研究背景、相关工作组织、研究空白、贡献表述和引用覆盖相关的具体方向进行突破，允许聚焦一个具体问题，不要求开发完整的引言与相关工作写作系统。鼓励从基础 Agent 的真实失败案例出发，通过开发与评测证明实际改善。  \n本课题重点关注四个问题：  \n立得住： 研究背景是否指向真实的研究脉络与具体的未解决问题，而不是“近年来受到广泛关注”式的空转铺垫。分得清： 相关工作是否按问题、方法或技术路线分组比较，能否准确转述各工作的结论、适用条件和局限，而不是逐篇摘要拼接。说得实： 研究空白是否由已引文献的缺口推出，并说明本文工作如何填补；断言处是否有证据或明确标注为作者判断。对得上： 贡献表述是否与本文实际方法、图表和实验结果一一对应，引用覆盖与元数据是否经得起逐条核对。\n\n可选择的突破方向：  \n优先考虑以下五个方向，也允许提出其他具有明确科研价值的写作问题。  \n研究背景： 从领域脉络、具体问题和技术约束入手，交代为什么这个问题现在值得做，避免泛泛的重要性叙述。相关工作组织： 建立分组与比较维度（问题设定、方法路线、数据与评价方式），在同一维度上比较各工作的取舍，而不是按时间顺序罗列。研究空白： 从已引工作的共同限制、未覆盖场景或相互冲突的结论中推导空白，并说明本文工作与之的对应关系。贡献表述： 把方法、实验和结论压缩为可核对的贡献条目，保证每条贡献都能在正文中找到对应证据，不夸大适用范围。引用覆盖： 保证关键工作、代表性工作和近期进展被覆盖，引用元数据准确、格式统一，论断与引用一一对应。  \n参赛者只需要选择一个明确问题，形成能够真实运行、独立验证、持续改进的最小成果。\n\n平台固定运行 3 个案例，比较不加载 Skill 与加载参赛 Skill 时的实际结果。双方使用相同案例输入、任务要求和可比条件；需要相对比较的评分项使用组织方预先固定的白板。白板是对照结果，不是参赛者答案。\n\n#### 2. 评分维度概要\n\n总分 **100 分**。综合三个固定案例的实际表现和提交材料评分，各评分项只计一次；本节只展示评分维度、分值和考察内容，不展示内部详细分档。\n\n| 评分维度 | 分值 | 评分点及分值 | 考察内容 |\n|-|-|-|-|\n| 实际效果 | 40 分 | 任务完成度 15 分；结果正确性 15 分；结果完整性 5 分；结果可核验性 5 分 | 是否交付了可以直接进入论文的引言与相关工作，四个部分（研究背景、相关工作、研究空白、贡献）齐全并且彼此承接，引用落在具体论断上。；关于他人工作的转述是否与原文一致、引用元数据是否真实、研究空白是否由已引文献的缺口推出、贡献表述是否与实际结果相符。；背景、相关工作、研究空白、贡献、引用覆盖五个要素是否齐全，以及主要方法路线、关键工作和必要字段（作者、年份、来源）是否都有覆盖。；每条引用能否回到来源，相关工作分组依据、空白推导过程和贡献对照关系能否被独立复核。 |\n| 使用增益 | 25 分 | 质量增益 15 分；效率增益 5 分；增益可验证性 5 分 | 相同论文材料、相同工具权限下，加载 Skill、插件或工作流后，成稿在论断准确、分组合理、空白成立、引用覆盖上的表现是否优于不加载的基础 Agent。；是否减少从拿到材料到成稿的耗时、逐条核对引用的条数、改写轮次和综合资源成本。；是否通过公平对照证明质量或效率改善。 |\n| 创新增益 | 15 分 | 新增能力 5 分；方法改进 5 分；创新证据 5 分 | 是否形成基础 Agent 或现有方案不具备、或难以稳定实现的写作能力，例如引用与论断绑定、按路线分组比较、空白推导、贡献与图表对齐。；文献筛选、分组归纳、引用核验、写作与核对分离等方法是否带来实质改进。；是否证明创新点相对已有方案（通用对话模型、文献管理工具的综述草稿功能等）的边界和价值。 |\n| 可靠体验 | 10 分 | 调用与易用性 3 分；运行稳定性 4 分；异常处理 3 分 | Agent 能否在“写引言”“整理相关工作”“补引用”“核对贡献”等真实指令下正确触发，作者能否按说明完成一次可用的起草与核对。；在不同学科、不同篇幅论文、不同引用格式和重复运行下能否持续产出可用稿件。；对材料不足、文献库为空、引用查不到原文、目标期刊格式未知、语言切换、空白缺乏依据等情况下的识别与处置能力。 |\n| 生态贡献 | 10 分 | 文档完整性 3 分；资源可复用性 4 分；分享推广价值 3 分 | 使用说明、依赖、配置、示例、适用学科与语言范围、支持的引用格式、限制与维护信息是否齐全。；Skill 本体、脚本、证据表与分组模板、核对清单、题集能否被他人复用。；是否沉淀可分享的写作案例、Benchmark、分组方法与失败分析，以及真实应用价值。 |\n\n质量与增益以平台固定案例、基础 Agent/Skill Agent 对照结果和可核验记录为依据；文字自述不能替代实际运行证据。\n\n#### 3. 交付要求\n\n**提交材料**\n\n参赛者只提交 Skill 及其必要资源；平台统一使用本题固定的 3 个案例运行 Skill。\n\n| 材料 | 必需内容 | 交付标准 |\n|-|-|-|\n| Skill 本体 | `SKILL.md`，以及实际使用的提示、规则或处理流程；写清用途、适用条件、调用方式、输入输出和异常处理。 | 平台能据此加载并执行给定案例，不能用预制答案代替实际运行。 |\n| 运行必需的脚本与资源 | 实际依赖的脚本、配置、模板、词表或其他资源；写清版本、安装方式、路径、来源和使用条件。 | 文件齐备、路径有效，不依赖作者未说明的个人文件或手工操作。 |\n| 使用与方法说明 | 完整调用步骤、输入输出解释、关键方法、适用场景、限制、失败处理和自查方法。 | 其他人或 Agent 可按说明独立使用，说明与提交版本一致。 |\n| 最小调用示例 | 至少一组输入、调用方式和示意输出；示意输出须标明为示例。 | 足以说明接口和完整使用流程，不冒充正式案例结果。 |\n\n**Skill 运行后的输出要求**\n\n每个案例返回一份结构化结果，保留输入标识、主结果、证据/来源定位、运行状态和不确定性。\n\n| 内容 | 字段与要求 |\n|-|-|\n| 目标产物 | 可编辑的稿件、改稿、引用/格式结果或结构化写作产物；完成标准：满足题目指定体裁、受众和格式 |\n| 事实与来源映射 | 数字、术语、引用、图表和关键论断的来源/修改记录；完成标准：可逐条回溯，不新增材料外事实 |\n| 版本与边界 | 修改差异、人工确认项、材料缺口和异常；完成标准：结果可继续编辑，未确认部分明确标注 |\n\n正式测试案例、白板和测评结果由平台提供或生成，参赛者无须另交三个测试案例、白板或预先生成的正式答案。材料缺失、无法判断和运行失败要分别说明。\n\n\n\n## Harbor技术提交约定\n\n# Runtime contract\nThis is a Skill authoring task. Create /app/submission/SKILL.md and any required text resources. Use valid name/description YAML frontmatter. Do not submit prepared answers or formal test outputs. The evaluator installs the actual Skill under /skills/weekly-skill, then runs official DeepSeek Harness on each fixed original case.\n\nAt execution time original input is /input/case.json and task.md. Material and artifacts are provided according to the topic; PDF parsing receives the actual PDF without a pre-extracted answer layer. Read actual files instead of assuming source content from labels. Work under /app/work; final actual results and editable artifacts belong under /app/output, including result.json with all original output_contract fields and case_id. Include honest status, sources, uncertainty and change records. Editable Office/slide/diagram outputs should also have real rendered PDF/PNG previews for inspection. A partial result must identify its limits. Do not fabricate missing software state or scientific data.\n\nModel, source/case versions, runtime, budgets and actual native traces are recorded by the platform; do not invent benchmark scores. Execution budget: 64 model requests, 900 seconds, 16384 tokens per response including reasoning. Save honest partial deliverables early and improve incrementally. Three cases, three repetitions per condition; actual service failures are paused separately. The platform provides/generates any required comparison; participants do not provide hidden tests or whiteboards. Skill resources: at most 50 UTF-8 text files, 500KB each and 2MB total, no symlinks. Runtime artifacts may be binary and are retained independently of final JSON validity.\n\n实际输入文件和原论文是事实依据；不依据错误的领域标签补造数据。\n\n\nResource entry point: environment/resources.yaml. Bundled files are relative to that directory; declared preinstalled runtime paths describe the pinned image. The actual fixed scientific cases are supplied by the evaluation platform.\n\n\n---\n\n题面已公开，正式提交开放时间以赛事通知为准。\n",
+  "contentGated": false,
+  "datasets": [],
+  "difficulty": 1,
+  "disc": "science",
+  "figureData": {
+    "basePath": "figures/product-arena-04-4b82ad21",
+    "figures": []
+  },
+  "figures": [
+    0,
+    0
+  ],
+  "hackathon": null,
+  "hackathonSeasonId": null,
+  "hasContent": true,
+  "id": "product-arena-04-4b82ad21",
+  "origin": "community",
+  "resources": [
+    {
+      "kind": "data",
+      "name": "interface-example"
+    },
+    {
+      "kind": "document",
+      "name": "execution-contract"
+    },
+    {
+      "kind": "tool",
+      "name": "scientific-python"
+    },
+    {
+      "kind": "document",
+      "name": "scientific-tools-provenance"
+    },
+    {
+      "kind": "tool",
+      "name": "official-deepseek-harness"
+    },
+    {
+      "kind": "tool",
+      "name": "pdf-text-tool"
+    },
+    {
+      "kind": "tool",
+      "name": "pdf-render-tool"
+    },
+    {
+      "kind": "tool",
+      "name": "ocr-tool"
+    },
+    {
+      "kind": "tool",
+      "name": "latex-compiler"
+    },
+    {
+      "kind": "tool",
+      "name": "office-renderer"
+    },
+    {
+      "kind": "tool",
+      "name": "browser-automation"
+    },
+    {
+      "kind": "tool",
+      "name": "font-discovery"
+    }
+  ],
+  "reviewStatus": "approved",
+  "roundEndAt": null,
+  "roundId": null,
+  "roundSeq": null,
+  "roundStartAt": null,
+  "scoring": {
+    "expected_metrics": [],
+    "formula_summary": "No automated scoring; reviewers grade attempts manually.",
+    "grader_name": null,
+    "protocol_url": "/api/protocol",
+    "score_range": [
+      0,
+      100
+    ],
+    "strategy": "human_review_only"
+  },
+  "stars": 0,
+  "status": "open",
+  "submittedBy": "mingjunxu-dpa",
+  "tags": [
+    "product-arena",
+    "skills",
+    "harbor",
+    "writing",
+    "writing-08"
+  ],
+  "title": "写作08｜引言与相关工作写作",
+  "title_zh": "写作08｜引言与相关工作写作",
+  "visibility": "public"
+}

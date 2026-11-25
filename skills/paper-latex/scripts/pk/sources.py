@@ -99,29 +99,56 @@ def discover(root: str, max_files: int = 200) -> Dict[str, Any]:
     for f in files:
         by_role.setdefault(f["role"], []).append(f["path"])
 
+    text_files = [f["path"] for f in files
+                  if f["role"] in {"text", "docx", "latex", "bibtex",
+                                   "table", "json", "spreadsheet"}
+                  and f["name"].lower() not in {"case.json"}]
     return {
         "root": root,
         "files": files,
         "by_role": by_role,
         "pdfs": by_role.get("pdf", []),
         "primary_pdf": _pick_primary(by_role.get("pdf", [])),
+        "primary_text": _pick_text(text_files),
         "case_json": _first_named(files, {"case.json"}),
         "task_md": _first_named(files, {"task.md", "task.markdown", "prompt.md"}),
         # Why there is nothing to read.  A mount that points at the wrong path
         # is the most common harness mistake, and it must not be reported as
         # "read some of it" (partial) nor crash before result.json exists.
-        "problem": _problem(root, files, by_role.get("pdf", [])),
+        "problem": _problem(root, files, by_role.get("pdf", []), text_files),
     }
 
 
-def _problem(root: str, files: List[Dict[str, Any]], pdfs: List[str]) -> Dict[str, Any] | None:
+def _problem(root: str, files: List[Dict[str, Any]], pdfs: List[str],
+             texts: List[str] | None = None) -> Dict[str, Any] | None:
     if not os.path.isdir(root):
         return {"kind": "missing_input", "detail": f"input directory does not exist: {root}"}
     if not files:
         return {"kind": "empty", "detail": f"input directory holds no readable file: {root}"}
-    if not pdfs:
-        return {"kind": "no_pdf", "detail": f"{len(files)} file(s) found, none is a PDF"}
+    if not pdfs and not texts:
+        return {"kind": "no_material",
+                "detail": f"{len(files)} file(s) found, none is a PDF or a readable text material"}
     return None
+
+
+def _pick_text(paths: List[str]) -> str | None:
+    """The most substantial prose file, ignoring task/instruction files."""
+    skip = re.compile(r"(case\.json|task\.md|rubric|style[_-]?guide|glossar|schema|"
+                      r"toolchain|template[_-]?requirements)", re.I)
+    cands = [p for p in paths if not skip.search(os.path.basename(p))]
+    if not cands:
+        return None
+
+    def rank(p: str):
+        ext = os.path.splitext(p)[1].lower()
+        pref = {".md": 0, ".docx": 1, ".tex": 2, ".txt": 3}.get(ext, 5)
+        try:
+            size = os.path.getsize(p)
+        except OSError:
+            size = 0
+        return (pref, -size, p)
+
+    return sorted(cands, key=rank)[0]
 
 
 def _first_named(files: Iterable[Dict[str, Any]], names: set) -> str | None:

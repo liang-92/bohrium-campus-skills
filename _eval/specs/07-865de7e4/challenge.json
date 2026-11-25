@@ -1,0 +1,103 @@
+{
+  "abstract": "产品赛第 07 道题目的预留占位，内容待补充。",
+  "armiId": "ARMI:2611.000029v5",
+  "attempts": 1135,
+  "benchmarkId": null,
+  "content": "### LaTeX 写作与编译：学术写作：完成产物，也保留来源\n\n#### 1. 题目介绍\n\n你需要围绕“LaTeX 写作与编译”制作一个可被 Agent 调用的 Skill，在组织方提供的 3 个固定科研案例上完成实际任务，并交付能够被复核的结果。  \n依据固定科研材料完成指定的学术写作、修改、格式、引用、双语或结构化写作产物，保持事实和来源一致。\n\n组织方为本题准备 3 个固定案例。每个案例包含任务说明、科研材料、必要的输入约束和评分所需的证据范围；案例会以相同内容分别交给基础 Agent 和加载参赛 Skill 的 Agent。你不需要自带正式测试案例，也不需要提交预先写好的答案。\n\n1. 读取事实底稿、受众、文体和格式约束。\n2. 完成指定的生成、改写、校对或结构化动作。\n3. 为事实、数字和引用保留来源或修改记录。\n4. 对材料不足、冲突和需要人工确认的内容明确标注。\n\n参赛者围绕一个真实、高频、具有明确输入和输出的 LaTeX 写作与编译任务，开发能够被 Agent 调用的 Skill，解决现有玻尔科学空间在该任务上的实际问题。  \n可选择与 LaTeX 源码、公式、表格、引用、模板适配、编译错误和可重复构建相关的方向。允许只聚焦一个具体问题，不要求开发完整系统。  \n本课题重点关注四个问题：  \n编译得通： 源码在指定模板与 TeX 发行版下能否按预期轮次编译通过，报错能否定位到具体文件、行号与根因，而不是停在第一条错误信息上。改得对： 公式符号与编号、表格数值与列宽、交叉引用与参考文献、版式与模板必填项，是否既符合原文意图又符合模板要求。交得可用： 交付物是否为结构清楚、可继续编辑和可维护的源码，而不是把 PDF、截图或一段无法编译的片段当作结果。复现得了： 他人按记录中的模板版本、宏包与字体版本、编译命令与轮次，能否得到同一份产物。\n\n可选择的突破方向：  \n优先考虑以下六个方向，也允许提出其他具有明确科研价值的 LaTeX 写作与编译问题。  \n源码结构与宏包： 处理主文件与子文件划分、导言区组织、宏包选择与加载顺序、命令与环境的正确用法，减少“加一个宏包坏另一处”的连锁问题。数学公式： 处理多行公式对齐、编号与引用、符号与上下标、单位与变量正斜体、定理与证明环境，保证公式含义与正文叙述一致。表格与浮动体： 处理宽表跨页、列宽与对齐、合并单元格、图表标题与位置约束、三线表样式，避免溢出裁切和靠缩放掩盖。引用与参考文献： 处理 \\cite/\\ref 的解析与编号、.bib 条目与正文对应、参考文献样式与排序、多遍编译后的收敛。模板适配： 处理期刊、会议或学位论文模板的版式约束、必填项与文件结构，把已有稿件迁入模板并保持版式合规。编译错误与可重复构建： 定位并修复编译错误与警告，稳定编译轮次，说明 TeX 发行版、宏包与字体依赖，使构建可在他人环境中重复。  \n参赛者只需要选择一个明确问题，形成能够真实运行、独立验证、持续改进的最小成果。\n\n平台固定运行 3 个案例，比较不加载 Skill 与加载参赛 Skill 时的实际结果。双方使用相同案例输入、任务要求和可比条件；需要相对比较的评分项使用组织方预先固定的白板。白板是对照结果，不是参赛者答案。\n\n#### 2. 评分维度概要\n\n总分 **100 分**。综合三个固定案例的实际表现和提交材料评分，各评分项只计一次；本节只展示评分维度、分值和考察内容，不展示内部详细分档。\n\n| 评分维度 | 分值 | 评分点及分值 | 考察内容 |\n|-|-|-|-|\n| 实际效果 | 40 分 | 任务完成度 15 分；结果正确性 15 分；结果完整性 5 分；结果可核验性 5 分 | 是否真正交付了能在指定模板下编译通过、并可并入稿件的 .tex 成果。；编译产物中的公式、表格、引用与版式是否与原文意图及模板要求一致。；任务要求的改动点、模板必填项与配套文件是否逐项覆盖。；源码改动、编译过程和产物是否能被独立复核。 |\n| 使用增益 | 25 分 | 质量增益 15 分；效率增益 5 分；增益可验证性 5 分 | 相同工程与环境下加载 Skill 后，相比不加载的基础 Agent 是否提升编译成功率与修复正确率。；是否减少定位报错、查宏包文档、反复编译和人工核对的成本。；是否通过公平对照证明质量或效率改善。 |\n| 创新增益 | 15 分 | 新增能力 5 分；方法改进 5 分；创新证据 5 分 | 是否形成基础 Agent 或现有方案不具备、或难以稳定实现的能力。；错误分类、修复策略、编译验证闭环等方法是否带来实质改进。；是否证明创新点相对已有方案的边界和价值。 |\n| 可靠体验 | 10 分 | 调用与易用性 3 分；运行稳定性 4 分；异常处理 3 分 | Agent 是否能正确触发并识别工程结构，用户是否能按说明完成一次编译-修复流程。；在不同模板、不同 TeX 发行版和重复运行下能否持续产出可编译且一致的源码。；对缺宏包、缺字体、报错级联、模板类文件缺失、权限不足等情况的识别与处置能力。 |\n| 生态贡献 | 10 分 | 文档完整性 3 分；资源可复用性 4 分；分享推广价值 3 分 | 使用说明、环境依赖、配置、示例、适用范围、限制和维护信息是否齐全。；Skill 本体、脚本、示例工程、检查清单和评分表能否被他人复用。；是否沉淀可分享的案例、查错方法、Benchmark 和真实应用价值。 |\n\n质量与增益以平台固定案例、基础 Agent/Skill Agent 对照结果和可核验记录为依据；文字自述不能替代实际运行证据。\n\n#### 3. 交付要求\n\n**提交材料**\n\n参赛者只提交 Skill 及其必要资源；平台统一使用本题固定的 3 个案例运行 Skill。\n\n| 材料 | 必需内容 | 交付标准 |\n|-|-|-|\n| Skill 本体 | `SKILL.md`，以及实际使用的提示、规则或处理流程；写清用途、适用条件、调用方式、输入输出和异常处理。 | 平台能据此加载并执行给定案例，不能用预制答案代替实际运行。 |\n| 运行必需的脚本与资源 | 实际依赖的脚本、配置、模板、词表或其他资源；写清版本、安装方式、路径、来源和使用条件。 | 文件齐备、路径有效，不依赖作者未说明的个人文件或手工操作。 |\n| 使用与方法说明 | 完整调用步骤、输入输出解释、关键方法、适用场景、限制、失败处理和自查方法。 | 其他人或 Agent 可按说明独立使用，说明与提交版本一致。 |\n| 最小调用示例 | 至少一组输入、调用方式和示意输出；示意输出须标明为示例。 | 足以说明接口和完整使用流程，不冒充正式案例结果。 |\n\n**Skill 运行后的输出要求**\n\n每个案例返回一份结构化结果，保留输入标识、主结果、证据/来源定位、运行状态和不确定性。\n\n| 内容 | 字段与要求 |\n|-|-|\n| 目标产物 | 可编辑的稿件、改稿、引用/格式结果或结构化写作产物；完成标准：满足题目指定体裁、受众和格式 |\n| 事实与来源映射 | 数字、术语、引用、图表和关键论断的来源/修改记录；完成标准：可逐条回溯，不新增材料外事实 |\n| 版本与边界 | 修改差异、人工确认项、材料缺口和异常；完成标准：结果可继续编辑，未确认部分明确标注 |\n\n正式测试案例、白板和测评结果由平台提供或生成，参赛者无须另交三个测试案例、白板或预先生成的正式答案。材料缺失、无法判断和运行失败要分别说明。\n\n\n\n## Harbor技术提交约定\n\n# Runtime contract\nThis is a Skill authoring task. Create /app/submission/SKILL.md and any required text resources. Use valid name/description YAML frontmatter. Do not submit prepared answers or formal test outputs. The evaluator installs the actual Skill under /skills/weekly-skill, then runs official DeepSeek Harness on each fixed original case.\n\nAt execution time original input is /input/case.json and task.md. Material and artifacts are provided according to the topic; PDF parsing receives the actual PDF without a pre-extracted answer layer. Read actual files instead of assuming source content from labels. Work under /app/work; final actual results and editable artifacts belong under /app/output, including result.json with all original output_contract fields and case_id. Include honest status, sources, uncertainty and change records. Editable Office/slide/diagram outputs should also have real rendered PDF/PNG previews for inspection. A partial result must identify its limits. Do not fabricate missing software state or scientific data.\n\nModel, source/case versions, runtime, budgets and actual native traces are recorded by the platform; do not invent benchmark scores. Execution budget: 64 model requests, 900 seconds, 16384 tokens per response including reasoning. Save honest partial deliverables early and improve incrementally. Three cases, three repetitions per condition; actual service failures are paused separately. The platform provides/generates any required comparison; participants do not provide hidden tests or whiteboards. Skill resources: at most 50 UTF-8 text files, 500KB each and 2MB total, no symlinks. Runtime artifacts may be binary and are retained independently of final JSON validity.\n\n实际输入文件和原论文是事实依据；不依据错误的领域标签补造数据。\n\n\nResource entry point: environment/resources.yaml. Bundled files are relative to that directory; declared preinstalled runtime paths describe the pinned image. The actual fixed scientific cases are supplied by the evaluation platform.\n\n\n---\n\n题面已公开，正式提交开放时间以赛事通知为准。\n",
+  "contentGated": false,
+  "datasets": [],
+  "difficulty": 1,
+  "disc": "science",
+  "figureData": {
+    "basePath": "figures/product-arena-07-865de7e4",
+    "figures": []
+  },
+  "figures": [
+    0,
+    0
+  ],
+  "hackathon": null,
+  "hackathonSeasonId": null,
+  "hasContent": true,
+  "id": "product-arena-07-865de7e4",
+  "origin": "community",
+  "resources": [
+    {
+      "kind": "data",
+      "name": "interface-example"
+    },
+    {
+      "kind": "document",
+      "name": "execution-contract"
+    },
+    {
+      "kind": "tool",
+      "name": "scientific-python"
+    },
+    {
+      "kind": "document",
+      "name": "scientific-tools-provenance"
+    },
+    {
+      "kind": "tool",
+      "name": "official-deepseek-harness"
+    },
+    {
+      "kind": "tool",
+      "name": "pdf-text-tool"
+    },
+    {
+      "kind": "tool",
+      "name": "pdf-render-tool"
+    },
+    {
+      "kind": "tool",
+      "name": "ocr-tool"
+    },
+    {
+      "kind": "tool",
+      "name": "latex-compiler"
+    },
+    {
+      "kind": "tool",
+      "name": "office-renderer"
+    },
+    {
+      "kind": "tool",
+      "name": "browser-automation"
+    },
+    {
+      "kind": "tool",
+      "name": "font-discovery"
+    }
+  ],
+  "reviewStatus": "approved",
+  "roundEndAt": null,
+  "roundId": null,
+  "roundSeq": null,
+  "roundStartAt": null,
+  "scoring": {
+    "expected_metrics": [],
+    "formula_summary": "No automated scoring; reviewers grade attempts manually.",
+    "grader_name": null,
+    "protocol_url": "/api/protocol",
+    "score_range": [
+      0,
+      100
+    ],
+    "strategy": "human_review_only"
+  },
+  "stars": 0,
+  "status": "open",
+  "submittedBy": "mingjunxu-dpa",
+  "tags": [
+    "product-arena",
+    "skills",
+    "harbor",
+    "writing",
+    "writing-13"
+  ],
+  "title": "写作13｜LaTeX 写作与编译",
+  "title_zh": "写作13｜LaTeX 写作与编译",
+  "visibility": "public"
+}

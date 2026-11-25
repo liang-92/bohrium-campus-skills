@@ -32,9 +32,13 @@ from typing import Any, Dict, List
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+from pk import contract as pk_contract  # noqa: E402
+from pk import deliver as pk_deliver    # noqa: E402
 from pk import document as pk_doc          # noqa: E402
 from pk import evidence as pk_ev           # noqa: E402
+from pk import report as pk_report        # noqa: E402
 from pk import result as pk_result         # noqa: E402
+from pk import quality as pk_quality      # noqa: E402
 import compose_all                          # noqa: E402
 
 # Notes composers write when a field is a placeholder.  Once --fill supplies the
@@ -114,6 +118,65 @@ def _apply_fill(payload: Dict[str, Any], fill: Dict[str, Any]) -> Dict[str, Any]
     segs_all = payload.get("segments") or []
     left = sum(1 for s in segs_all if not (s.get("translation") or "").strip())
     return {"applied": applied, "segments": len(segs_all), "untranslated": left}
+
+
+def gate_status(res: Dict[str, Any], status: str, doc: Dict[str, Any],
+                case: Dict[str, Any]) -> tuple:
+    """Should this result still be allowed to call itself `complete`?
+
+    Returns `(ok, problems)`.  Kept separate from `main` so the rule can be
+    tested on a doctored result without building a PDF that fails on purpose.
+    """
+    check = pk_result.validate_result(res, doc, case=case)
+    return bool(check.get("ok")), check.get("problems", [])
+
+
+DEFAULT_REQUIRED: Dict[str, List[str]] = {
+    "parse": ["structure.md", "body.md", "refs.md", "page_map.csv"],
+    "translate": ["bilingual_parallel.md", "terms_used.csv", "untranslated.csv"],
+    "notes": ["section_summary.md", "outline.md", "notes.md", "cards.jsonl"],
+    "nanopub": ["nanopubs.json", "decomposition.md"],
+    "kg": ["entities.csv", "edges.csv", "type_summary.md", "graph.json",
+           "clusters.json", "ambiguity.md"],
+    "polish": ["revised.md", "changes.csv"],
+    "refs": ["manuscript_cited.md", "citation_placement.csv", "references_gbt.md"],
+    "intro": ["background.md", "related_work.md", "gap.md", "contributions.md",
+              "intro_cited.md", "citation_map.csv"],
+    "methods": ["methods.md", "params.csv", "repro_checklist.md", "materials_equipment.csv"],
+    "latex": ["project/main.tex", "project/compile.log", "fix_report.md"],
+}
+
+
+def _infer_required(profile: str, task: str, doc: Dict[str, Any],
+                    stage_required: List[str]) -> tuple:
+    """Files named by the case, then by task.md, then the profile's own set.
+
+    `required_files` is optional in the official contract.  Treating its absence
+    as "no deliverables" was the single point of failure in the 12-case report:
+    a flat contract lost every writing score even when the composer had the
+    content.
+    """
+    if stage_required:
+        return list(stage_required), "case.json.required_files"
+    names: List[str] = []
+    text = task or ""
+    # Backticked names are the explicit ones; bare `output/xxx` forms are the
+    # other common authoring style.
+    for pat in (r"`([^`\n]+\.(?:md|csv|json|jsonl|bib|tex|log))`",
+                r"(?<![/\w])((?:output/)?[A-Za-z0-9_.-]+\.(?:md|csv|json|jsonl|bib|tex|log))"):
+        for m in re.finditer(pat, text, re.I):
+            name = m.group(1).strip().lstrip("./")
+            if name and name not in names:
+                names.append(name)
+    inputs = {os.path.basename(str(f.get("rel") or f.get("name") or ""))
+              for f in (doc.get("files") or [])}
+    inputs |= {str(f.get("rel") or "") for f in (doc.get("files") or [])}
+    names = [n for n in names if os.path.basename(n) not in inputs
+             and not n.startswith("input/") and n != "result.json"]
+    if names:
+        return names, "task.md filenames"
+    fallback = DEFAULT_REQUIRED.get(profile, [])
+    return list(fallback), f"default {profile} deliverable set"
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -231,8 +294,29 @@ def main(argv: List[str] | None = None) -> int:
                     "every field the composer left blank was filled from "
                     f"{os.path.basename(fill_path)}; the wording is the agent's, "
                     "not the PDF's")
+            # Fill can also complete a prose draft (intro/methods) or a polish
+            # payload.  The old code only upgraded translation segments, so a
+            # fully written intro still shipped as partial.
+            if status == "partial" and args.profile in {"intro", "methods"}:
+                draft = (payload or {}).get("draft") or {}
+                paras = draft.get("paragraphs") or []
+                if paras and all((p.get("text") or "").strip() for p in paras):
+                    status = "complete"
+                    uncertainty["notes"] = [n for n in uncertainty.get("notes", [])
+                                            if not _STALE_EMPTY.search(n)]
+            if status == "partial" and args.profile == "polish":
+                if (payload or {}).get("revised_text") and (payload or {}).get("rewrites"):
+                    status = "complete"
 
     case_id = _case_id(doc.get("case") or {}, doc, os.path.basename(os.path.abspath(args.input)))
+    stage = pk_contract.stage(doc.get("case") or {})
+    required, required_source = _infer_required(
+        args.profile, doc.get("task") or "", doc,
+        list(stage["required_files"]) if stage else [])
+    if required and not (stage and stage["required_files"]):
+        uncertainty.setdefault("notes", []).append(
+            f"deliverable list inferred from {required_source}; "
+            "the case did not declare required_files")
     # An input we could not read at all is `unable`, not `partial`: partial would
     # suggest we read some of it.  The reason travels with the result.
     err = (d.get("source") or {}).get("error")
@@ -266,12 +350,32 @@ def main(argv: List[str] | None = None) -> int:
                if ocr_missing else ""))
         say("status=unable: zero blocks, zero tables, zero references")
 
+    # Quantity is part of honesty: four blocks out of a scanned page is not a
+    # complete parse, even though `status` from the composer said so.
+    q = d.get("quality") or {}
+    failed_pages = [p.get("page") for p in (d.get("page_stats") or [])
+                    if p.get("ocr_failed")]
+    text_engine = str((d.get("source") or {}).get("backend") or "").startswith("text")
+    if status == "complete" and not text_engine:
+        ocr_sections = len([b for b in (d.get("blocks") or [])
+                            if (b.get("type") or "") == "heading"])
+        ocr_ok = bool(d.get("blocks")) and ocr_sections >= 3 and \
+            int((d.get("quality") or {}).get("chars") or 0) >= 500
+        if failed_pages or (d.get("blocks") and len(d["blocks"]) < 10 and not ocr_ok):
+            status = "partial"
+            why = ("OCR was required but produced nothing on page(s) "
+                   f"{failed_pages[:5]}") if failed_pages else \
+                  f"only {len(d.get('blocks', []))} block(s) recovered"
+            uncertainty.setdefault("notes", []).append(f"not complete: {why}")
+            say(f"status capped at partial: {why}")
+
     # Engine degradation must be visible in result.json itself, not only in
     # run.log: the grader (and any agent consuming the result) reads result.json
     # first.  Without pymupdf the layout/table/reference fidelity drops sharply,
     # so a `complete` claim on a degraded backend would overstate the result.
     backend = (d.get("source") or {}).get("backend") or ""
-    degraded_engine = bool(backend) and not backend.lower().startswith("pymupdf")
+    degraded_engine = bool(backend) and backend.lower() not in {"text"} \
+        and not backend.lower().startswith("pymupdf")
     if degraded_engine and d.get("blocks"):
         if status == "complete":
             status = "partial"
@@ -291,10 +395,48 @@ def main(argv: List[str] | None = None) -> int:
         else:
             draft["status"] = "to_be_written"
 
-    res, leftover = pk_result.build_result(
-        case_id=case_id, doc=doc, case=doc.get("case") or {},
-        payload=payload, status=status,
-        evidence=evidence, uncertainty=uncertainty, notes=notes)
+    # Every file the case names is a graded artifact.  Writing it is not optional
+    # and not inferred from task.md: `required_files` is read verbatim.
+    files: List[Dict[str, Any]] = []
+    if required:
+        try:
+            files = pk_deliver.write_required(
+                args.out, required, profile=args.profile, doc=doc, payload=payload,
+                evidence=evidence, uncertainty=uncertainty,
+                case=doc.get("case") or {}, task=doc.get("task") or "",
+                input_dir=args.input)
+            done = len([f for f in files if f.get("bytes")])
+            say(f"required files: {done}/{len(required)} written")
+        except Exception as exc:
+            notes.append(f"deliverable writer failed: {type(exc).__name__}: {exc}")
+            uncertainty.setdefault("notes", []).append(
+                "required_files could not all be written; see run.log")
+            log.append(traceback.format_exc())
+            say(f"deliverable error: {exc}")
+
+    quality_issues = pk_quality.issues(
+        args.profile, doc, payload, args.out, required, files)
+    if quality_issues:
+        message = "; ".join(quality_issues[:6])
+        notes.append("content gate: " + message)
+        uncertainty.setdefault("notes", []).append("content gate: " + message)
+        if status == "complete":
+            status = "partial"
+            say(f"status capped at partial by content gate: {message[:180]}")
+
+    envelope = None
+    if stage:
+        envelope = pk_report.envelope(args.profile, doc, payload, evidence, uncertainty,
+                                      files, required)
+
+    def build(status_value: str):
+        return pk_result.build_result(
+            case_id=case_id, doc=doc, case=doc.get("case") or {},
+            payload=payload, status=status_value,
+            evidence=evidence, uncertainty=uncertainty, notes=notes,
+            envelope=envelope, files=files, required=required, profile=args.profile)
+
+    res, leftover = build(status)
     # Slices the case never asked for go to their own file: `output_contract`
     # must stay exactly as wide as the declared contract, or the extra keys read
     # as renamed answers.
@@ -302,23 +444,75 @@ def main(argv: List[str] | None = None) -> int:
         with open(os.path.join(args.out, "payload.json"), "w", encoding="utf-8") as fh:
             json.dump(leftover, fh, ensure_ascii=False, indent=1)
         say(f"extra slices -> payload.json ({len(leftover)} keys: {list(leftover)[:6]})")
+
+    check = pk_result.validate_result(res, doc, case=doc.get("case") or {},
+                                       out_dir=args.out,
+                                       required=[r for r in required if r != "result.json"])
+    check["content_ok"] = not quality_issues
+    if quality_issues:
+        check["ok"] = False
+        check["quality_issues"] = quality_issues[:12]
+    # The self-check is a gate, not a log line.  A result that fails it is not
+    # shipped as `complete`: we downgrade, say why, and rebuild so
+    # `status` moves together with the top-level status.
+    downgraded = False
+    if not check.get("ok") and status == "complete":
+        status = "partial"
+        uncertainty.setdefault("notes", []).append(
+            "self-check failed, so this result is not claimed as complete: "
+            + "; ".join(check.get("problems", [])[:3]))
+        if envelope is not None:
+            envelope = pk_report.envelope(args.profile, doc, payload, evidence, uncertainty,
+                                          files, required)
+        res, _ = build(status)
+        check = pk_result.validate_result(res, doc, case=doc.get("case") or {},
+                                          out_dir=args.out,
+                                          required=[r for r in required if r != "result.json"])
+        check["content_ok"] = not quality_issues
+        if quality_issues:
+            check["ok"] = False
+            check["quality_issues"] = quality_issues[:12]
+        downgraded = True
+        say(f"self-check failed -> status downgraded to partial "
+            f"({len(check.get('problems', []))} problem(s))")
+
     res["run"] = {"profile": args.profile, "engine": backend,
                   "fill": {"file": os.path.basename(fill_path) if fill_path else None,
                            "applied": fill_info["applied"],
                            "segments": fill_info["segments"],
                            "untranslated": fill_info["untranslated"]},
                   "degraded_engine": degraded_engine,
+                  # Shipped inside the result: the reader of result.json can see
+                  # whether the deliverable passed its own checks without opening
+                  # run.log, and `problems` is a count they can recompute.
+                  "validation": {"ok": bool(check.get("ok")),
+                                 "structural_ok": bool(check.get("structural_ok")),
+                                 "content_ok": bool(check.get("content_ok")),
+                                 "scope": check.get("scope", "structural"),
+                                 "problems": len(check.get("problems", [])),
+                                 "problem_detail": check.get("problems", [])[:8],
+                                 "quality_issues": check.get("quality_issues", [])[:8],
+                                 "evidence_items": check.get("evidence_items"),
+                                 "contract_fields": check.get("contract_fields"),
+                                 "required_files": check.get("required_files"),
+                                 "files_missing": check.get("files_missing"),
+                                 "files_empty": check.get("files_empty"),
+                                 "downgraded": downgraded},
                   "seconds": round(time.time() - t0, 1),
                   "blocks": len(d.get("blocks", [])), "tables": len(d.get("tables", [])),
                   "formulas": len(d.get("formulas", [])), "references": len(d.get("references", []))}
     pk_result.write(res, os.path.join(args.out, "result.json"))
 
-    check = pk_result.validate_result(res, doc, case=doc.get("case") or {})
     with open(os.path.join(args.out, "run.log"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(log + [json.dumps(check, ensure_ascii=False)]))
-    print(json.dumps({"ok": True, "result": os.path.join(args.out, "result.json"),
-                      "status": status, "validate": check,
+    print(json.dumps({"ok": bool(check.get("ok")),
+                      "result": os.path.join(args.out, "result.json"),
+                      "status": res.get("status", status), "validate": check,
+                      "exit": 0,
                       "seconds": res["run"]["seconds"]}, ensure_ascii=False, indent=2))
+    # A result.json is always written; partial/unable is a valid outcome and is
+    # carried by `status` + `validation`, not by crashing the harness with a
+    # non-zero exit code.
     return 0
 
 

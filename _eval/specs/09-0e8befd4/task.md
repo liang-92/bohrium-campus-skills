@@ -1,0 +1,89 @@
+### Nanopublication：科研阅读：回答问题，也给出依据
+
+#### 1. 题目介绍
+
+你需要围绕“Nanopublication”制作一个可被 Agent 调用的 Skill，在组织方提供的 3 个固定科研案例上完成实际任务，并交付能够被复核的结果。  
+读取固定科研材料并完成本题指定的解析、翻译、问答、提取、核验或知识结构化，关键结果回到原文证据。
+
+组织方为本题准备 3 个固定案例。每个案例包含任务说明、科研材料、必要的输入约束和评分所需的证据范围；案例会以相同内容分别交给基础 Agent 和加载参赛 Skill 的 Agent。你不需要自带正式测试案例，也不需要提交预先写好的答案。
+
+1. 先识别输入材料和问题边界。
+2. 按题目要求完成阅读或解析动作。
+3. 为关键结论保留页码、段落、字段或图表定位。
+4. 对未报告、无法判断和材料冲突明确说明。
+
+围绕真实论文中的关键结论，开发能够拆分断言、绑定证据和来源，并输出可机器读取结构的 Skill、插件或轻量工作流，重点改善断言粒度、证据对齐、来源可追溯与导出可用性。  
+参赛者可以选择一个真实、高频、输入输出明确的子场景进行突破，不要求同时解决全部 Nanopublication 问题。可选择 Nanopublication 生成、断言校验、证据绑定、来源检索、结构化导出等具体方向。允许聚焦一个问题，不要求开发完整的 Nanopublication 系统。  
+本课题重点关注四个问题：  
+拆得细： 一段结论能否被拆成若干条各自可判断真假的断言，而不是把整段话塞进一个字段。对得上： 每条断言能否找到真正支撑它的最小证据片段，并且片段的原文位置可被指出。追得回： 断言、证据、论文、作者、年份、版本之间的链路是否完整，他人能否据此回到原文。读得懂： 导出的结构是否符合约定的字段与序列化形态，能否被下游程序直接解析而不需要人工清洗。
+
+可选择的突破方向：  
+优先考虑以下五个方向，也允许提出其他具有明确科研价值的知识单元构建问题。  
+断言拆解： 将段落拆成单一、可验证的科研断言，保留条件和限定范围，处理复合句中的并列与因果结构。证据绑定： 为每条断言关联最小充分证据片段和原文位置，区分直接证据与间接推论。来源元数据： 记录论文、作者、年份、版本、数据来源与标识符，支持后续回溯与去重。质量检查： 检测断言过宽、证据不足、关系类型错误、主体混淆和来源缺失，并给出可复现的判定依据。结果复核与复用： 优先选择能够回到原文、可重复运行且方便其他用户复用的任务，明确字段定义与使用边界。  
+参赛者只需要选择一个明确问题，形成能够真实运行、独立验证、持续改进的最小成果。
+
+平台固定运行 3 个案例，比较不加载 Skill 与加载参赛 Skill 时的实际结果。双方使用相同案例输入、任务要求和可比条件；需要相对比较的评分项使用组织方预先固定的白板。白板是对照结果，不是参赛者答案。
+
+#### 2. 评分维度概要
+
+原题满分 **100 分**。GitHub 公开作品链接为额外附加分，最高加 **5 分**。综合三个固定案例的实际表现和提交材料评分，各评分项只计一次；本节只展示评分维度、分值和考察内容，不展示内部详细分档。
+
+| 评分维度 | 分值 | 评分点及分值 | 考察内容 |
+|-|-|-|-|
+| 实际效果 | 40 分 | 任务完成度 15 分；结果正确性 15 分；结果完整性 5 分；结果可核验性 5 分 | 是否真的把论文段落拆成一条条可独立判断真假的科研断言，并为每条断言绑定证据片段与来源、输出可机器读取的结构，而不是把整段摘要塞进一个“断言”字段。；断言是否忠实于原文、证据片段是否真的支持该断言、主体与关系方向是否准确、来源元数据是否真实。；是否覆盖题目要求的结构层次与字段：断言、主体与关系、证据片段、证据位置、来源元数据、置信度依据、标识符是否齐全。；他人能否按记录回到原文，逐条确认断言、证据片段和来源。 |
+| 使用增益 | 25 分 | 质量增益 15 分；效率增益 5 分；增益可验证性 5 分 | 相同论文材料、相同工具权限下，加载 Skill、插件或工作流后相比基础 Agent 是否改善断言质量与证据质量。；是否减少人工拆分、回原文定位、字段补录的工作量，以及重试和综合资源成本。；是否通过公平对照证明质量或效率改善。 |
+| 创新增益 | 15 分 | 新增能力 5 分；方法改进 5 分；创新证据 5 分 | 是否形成基础 Agent 或现有方案不具备、或难以稳定实现的拆解、对齐与校验能力。；断言粒度判据、证据最小充分性判据、关系类型受控词表映射、去重与合并规则等方法是否带来实质改进。；是否证明创新点相对已有方案的边界和价值。 |
+| 可靠体验 | 10 分 | 调用与易用性 3 分；运行稳定性 4 分；异常处理 3 分 | Agent 是否能正确触发和调用，用户是否能按说明完成一次完整的抽取与导出。；在不同期刊、不同篇幅和含图表论文、以及重复运行下能否持续产出可用结果。；对扫描版无文本层、原文无法访问、证据跨图表、断言找不到支撑片段、断言与证据冲突、字段缺失等情况的识别与处置能力。 |
+| 生态贡献 | 10 分 | 文档完整性 3 分；资源可复用性 4 分；分享推广价值 3 分 | SKILL.md、字段字典、抽取规则、配置、示例、适用范围、限制和维护信息是否齐全。；字段定义、受控词表、抽取脚本、证据定位方法、20 条断言样例和题集能否被他人直接复用。；是否沉淀可分享的案例、Benchmark、拆解经验、字段规范与真实应用价值。 |
+
+质量与增益以平台固定案例、基础 Agent/Skill Agent 对照结果和可核验记录为依据；文字自述不能替代实际运行证据。
+
+**GitHub 公开作品链接（5 分）**　提交本题作品的 GitHub 公开链接。评审无需登录即可打开链接并找到本次提交的作品，得 5 分。缺交或经核实链接无效，本项得 0 分，其他评分项按原规则计分。
+
+#### 3. 交付要求
+
+**提交材料**
+
+参赛者只提交 Skill 及其必要资源；平台统一使用本题固定的 3 个案例运行 Skill。
+
+| 材料 | 必需内容 | 交付标准 |
+|-|-|-|
+| Skill 本体 | `SKILL.md`，以及实际使用的提示、规则或处理流程；写清用途、适用条件、调用方式、输入输出和异常处理。 | 平台能据此加载并执行给定案例，不能用预制答案代替实际运行。 |
+| 运行必需的脚本与资源 | 实际依赖的脚本、配置、模板、词表或其他资源；写清版本、安装方式、路径、来源和使用条件。 | 文件齐备、路径有效，不依赖作者未说明的个人文件或手工操作。 |
+| 使用与方法说明 | 完整调用步骤、输入输出解释、关键方法、适用场景、限制、失败处理和自查方法。 | 其他人或 Agent 可按说明独立使用，说明与提交版本一致。 |
+| 最小调用示例 | 至少一组输入、调用方式和示意输出；示意输出须标明为示例。 | 足以说明接口和完整使用流程，不冒充正式案例结果。 |
+
+**Skill 运行后的输出要求**
+
+每个案例返回一份结构化结果，保留输入标识、主结果、证据/来源定位、运行状态和不确定性。
+
+| 内容 | 字段与要求 |
+|-|-|
+| 阅读/解析结果 | 按题目要求的答案、结构化字段、翻译或知识结构；完成标准：覆盖任务要求且能回到材料定位 |
+| 证据与边界 | 页码、段落、图表、字段或公式位置；未报告和不确定项；完成标准：关键结论可复核，无法判断不被写成事实 |
+| 运行状态 | 成功、部分完成、无法判断或拒答及原因；完成标准：异常原因和可人工接管位置清楚 |
+
+正式测试案例、白板和测评结果由平台提供或生成，参赛者无须另交三个测试案例、白板或预先生成的正式答案。材料缺失、无法判断和运行失败要分别说明。
+
+**本题作品的 GitHub 公开链接**　请在提交材料中填写作品所在的 GitHub 仓库、目录或文件链接。如一个仓库包含多个作品，请直接链接到本题作品所在位置，或在链接旁注明目录或文件名。提交前请用未登录 GitHub 的浏览器窗口打开一次，确认能看到作品。
+
+请在提交目录根路径放置 `GITHUB_URL.txt`，第一行写 GitHub 链接。如需指定作品文件，可在第二行写本次提交目录中的相对文件路径。
+
+## Harbor技术提交约定
+
+# Runtime contract
+This is a Skill authoring task. Create /app/submission/SKILL.md and any required text resources. Use valid name/description YAML frontmatter. Do not submit prepared answers or formal test outputs. The evaluator installs the actual Skill under /skills/weekly-skill, then runs official DeepSeek Harness on each fixed original case.
+
+At execution time original input is /input/case.json and task.md. Material and artifacts are provided according to the topic; PDF parsing receives the actual PDF without a pre-extracted answer layer. Read actual files instead of assuming source content from labels. Work under /app/work; final actual results and editable artifacts belong under /app/output, including result.json with all original output_contract fields and case_id. Include honest status, sources, uncertainty and change records. Editable Office/slide/diagram outputs should also have real rendered PDF/PNG previews for inspection. A partial result must identify its limits. Do not fabricate missing software state or scientific data.
+
+Model, source/case versions, runtime, budgets and actual native traces are recorded by the platform; do not invent benchmark scores. Execution budget: 64 model requests, 900 seconds, 16384 tokens per response including reasoning. Save honest partial deliverables early and improve incrementally. Three cases, three repetitions per condition; actual service failures are paused separately. The platform provides/generates any required comparison; participants do not provide hidden tests or whiteboards. Skill resources: at most 50 UTF-8 text files, 500KB each and 2MB total, no symlinks. Runtime artifacts may be binary and are retained independently of final JSON validity.
+
+实际输入文件和原论文是事实依据；不依据错误的领域标签补造数据。
+
+
+Resource entry point: environment/resources.yaml. Bundled files are relative to that directory; declared preinstalled runtime paths describe the pinned image. The actual fixed scientific cases are supplied by the evaluation platform.
+
+
+---
+
+题面已公开，正式提交开放时间以赛事通知为准。

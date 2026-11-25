@@ -20,7 +20,7 @@ Audit and rebuild reference lists: parse entries, map in-text citations, detect 
 
 - 任务要求检查/整理参考文献、正文引用与文末列表是否一致
 - 需要编号更新、去重、格式转换（GB/T 7714、APA、BibTeX）
-- 怀疑有编造条目、重复条目、引用错位
+- 怀疑条目并不存在、重复、引用错位
 
 不适用：与文献无关的任务、纯图片问答、需要联网检索的任务。
 
@@ -96,7 +96,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
    **按类型分支**：期刊 `[J]` 出卷(期): 页；会议 `[C]` 用 `//会议名` 前缀；
    图书 `[M]`、电子资源 `[EB/OL]` 各自成式；BibTeX 对应 `@article/@inproceedings/@book/@misc`，
    `booktitle` 与 `journal` 不混用。BibTeX citation key 由「第一作者姓氏 + 年份 + 标题首个实词」生成，稳定可复现。
-   字段缺失处留空而不是编造。
+   字段缺失处留空，不补写。
 6. **可疑条目**：无年份、无 venue、标题异常、DOI 形态不合法，单独列出待人工核验。
 
 ## 输出
@@ -131,7 +131,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 | `figures[].caption` / `caption_block` / `caption_bbox` | 图注原文、图注块 id、图注位置（`below`/`above`）|
 | `figures_dropped[]` | 被判定为子图或装饰的块，附 bbox 与理由（不静默丢弃）|
 | `tables[].rows` / `n_rows` / `n_cols` | 单元格内容与行列数，`in_table` 标出正文块属于哪张表 |
-| `image_tables[]` | 只有图片、没有文字层的表格：给出页码与图注，明确「单元格不在 `tables[]` 里，不要编造」|
+| `image_tables[]` | 只有图片、没有文字层的表格：给出页码与图注，明确「单元格不在 `tables[]` 里，不要补写」|
 
 `coverage.json` 把异常单独记下来，而不是让它们影响正文而不留痕：
 
@@ -170,7 +170,7 @@ poppler，缺什么会在 `run.log` 和 `coverage.json` 里写明，不会静默
 ## 怎么证明它比不加载更好（对照协议）
 
 评分项要的是「加载 Skill 的 Agent vs 不加载的 Agent」。本 Skill 不含模型调用，
-也不编造模型运行记录。能离线做的那一半已经做了，脚本与结果都在仓库里：
+能离线做的那一半已经做了，脚本与结果都在仓库里：
 
 | 用例 | base（纯文本转储） | skill | delta |
 |---|---|---|---|

@@ -1,0 +1,86 @@
+### 方法与实验章节写作：学术写作：完成产物，也保留来源
+
+#### 1. 题目介绍
+
+你需要围绕“方法与实验章节写作”制作一个可被 Agent 调用的 Skill，在组织方提供的 3 个固定科研案例上完成实际任务，并交付能够被复核的结果。  
+依据固定科研材料完成指定的学术写作、修改、格式、引用、双语或结构化写作产物，保持事实和来源一致。
+
+组织方为本题准备 3 个固定案例。每个案例包含任务说明、科研材料、必要的输入约束和评分所需的证据范围；案例会以相同内容分别交给基础 Agent 和加载参赛 Skill 的 Agent。你不需要自带正式测试案例，也不需要提交预先写好的答案。
+
+1. 读取事实底稿、受众、文体和格式约束。
+2. 完成指定的生成、改写、校对或结构化动作。
+3. 为事实、数字和引用保留来源或修改记录。
+4. 对材料不足、冲突和需要人工确认的内容明确标注。
+
+参赛者围绕一个真实、高频、具有明确输入和输出的方法与实验章节写作任务，开发能够被 Agent 调用的 Skill，解决现有玻尔科学空间在该任务上的实际问题。  
+可选择与方法步骤、实验设置、参数、数据集、对照实验、可复现性和限制条件相关的具体方向。允许聚焦一个具体问题，不要求开发完整的方法与实验章节写作系统。  
+本课题重点关注四个问题：  
+写得全： 关键步骤、实验设置、参数、数据集与划分、对照与重复次数是否都被写到，而不是只留下能读通的主干。写得准： 参数取值、数据集版本与划分、训练与评测条件是否与配置文件、日志和代码一致，有没有为了段落顺畅而补出的数值。做得着： 读者能否按章节中的步骤与参数复做实验，复现所需的版本、环境、随机种子和命令是否给全。说得住： 材料的缺口和不确定处是否被显式标出并交作者确认，限制条件是否指向具体的失效场景而不是套话。  
+参赛者只需要选择一个明确问题，形成能够真实运行、独立验证、持续改进的最小成果。
+
+可选择的突破方向：  
+优先考虑以下六个方向，也允许提出其他具有明确科研价值的章节写作问题。  
+方法步骤： 把零散的实验记录整理成有序、可执行的步骤序列，写清每步的输入、操作、输出与判断条件，避免把多步操作压成一句。实验设置： 分开描述训练、验证与测试流程，写清硬件、软件版本、运行环境、随机种子与重复次数，避免条件串台。参数与来源： 生成带名称、取值、单位、作用对象和来源（配置文件、日志或作者确认）的参数表，并把正文数值与表格对齐。数据集与划分： 说明数据集名称、版本、规模、预处理、划分比例与随机方式，以及各子集的用途，避免版本含混导致复现失败。对照实验： 写清基线对象及其版本、对照条件是否同预算、评价指标与统计方式，使“与基线比较”成为可比结论而不是断言。可复现性与限制条件： 给出复现清单（代码版本、环境、命令、数据获取方式），并把限制条件落到具体失效场景与适用范围。  
+参赛者只需要选择一个明确方向，形成能够真实运行、独立验证、持续改进的最小成果。
+
+平台固定运行 3 个案例，比较不加载 Skill 与加载参赛 Skill 时的实际结果。双方使用相同案例输入、任务要求和可比条件；需要相对比较的评分项使用组织方预先固定的白板。白板是对照结果，不是参赛者答案。
+
+#### 2. 评分维度概要
+
+总分 **100 分**。综合三个固定案例的实际表现和提交材料评分，各评分项只计一次；本节只展示评分维度、分值和考察内容，不展示内部详细分档。
+
+| 评分维度 | 分值 | 评分点及分值 | 考察内容 |
+|-|-|-|-|
+| 实际效果 | 40 分 | 任务完成度 15 分；结果正确性 15 分；结果完整性 5 分；结果可核验性 5 分 | 是否真正把散落的实验材料整理成可执行的方法与实验章节，覆盖步骤、设置、参数、数据、对照与限制并交付可用成稿。；步骤、参数取值、数据集版本与划分、训练与评测条件是否与配置文件、实验日志和代码一致，是否存在为段落顺畅而补出的数值。；是否覆盖任务要求的六类要素：步骤、实验设置、参数、数据集、对照、复现与限制。；每条参数与步骤能否追溯到具体材料，缺口与人工确认项是否可被复核。 |
+| 使用增益 | 25 分 | 质量增益 15 分；效率增益 5 分；增益可验证性 5 分 | 相同材料、模型与预算下，加载 Skill、插件或工作流后章节的齐全度、准确性与条件一致性是否提升。；是否减少作者翻配置、追问实验细节和重写段落的时间与返工。；是否通过公平对照证明章节质量改善。 |
+| 创新增益 | 15 分 | 新增能力 5 分；方法改进 5 分；创新证据 5 分 | 是否形成“从代码、配置、日志、数据说明抽取要素—对齐正文—发现缺口并追问”的能力，而不是填空式章节模板。；要素抽取、参数对齐、条件校验、缺口追问等方法是否带来实质改进。；是否证明创新点相对已有方案的边界与价值。 |
+| 可靠体验 | 10 分 | 调用与易用性 3 分；运行稳定性 4 分；异常处理 3 分 | Agent 在给定材料下能否正确触发，用户能否按说明完成一次章节补写。；在更换论文方向、材料形态和重复运行时能否持续产出可用章节。；对材料缺失、配置冲突、参数无来源、数据集版本不明、权限不足等情况的识别与处置。 |
+| 生态贡献 | 10 分 | 文档完整性 3 分；资源可复用性 4 分；分享推广价值 3 分 | 使用说明、依赖、配置、示例、适用边界、需人工确认项和维护信息是否齐全。；Skill 本体、脚本、配置、要素清单模板、参数表模板、追问清单等资源能否被他人复用。；是否沉淀可分享的章节样例、题集、失败模式和实践经验。 |
+
+质量与增益以平台固定案例、基础 Agent/Skill Agent 对照结果和可核验记录为依据；文字自述不能替代实际运行证据。
+
+#### 3. 交付要求
+
+**提交材料**
+
+参赛者只提交 Skill 及其必要资源；平台统一使用本题固定的 3 个案例运行 Skill。
+
+| 材料 | 必需内容 | 交付标准 |
+|-|-|-|
+| Skill 本体 | `SKILL.md`，以及实际使用的提示、规则或处理流程；写清用途、适用条件、调用方式、输入输出和异常处理。 | 平台能据此加载并执行给定案例，不能用预制答案代替实际运行。 |
+| 运行必需的脚本与资源 | 实际依赖的脚本、配置、模板、词表或其他资源；写清版本、安装方式、路径、来源和使用条件。 | 文件齐备、路径有效，不依赖作者未说明的个人文件或手工操作。 |
+| 使用与方法说明 | 完整调用步骤、输入输出解释、关键方法、适用场景、限制、失败处理和自查方法。 | 其他人或 Agent 可按说明独立使用，说明与提交版本一致。 |
+| 最小调用示例 | 至少一组输入、调用方式和示意输出；示意输出须标明为示例。 | 足以说明接口和完整使用流程，不冒充正式案例结果。 |
+
+**Skill 运行后的输出要求**
+
+每个案例返回一份结构化结果，保留输入标识、主结果、证据/来源定位、运行状态和不确定性。
+
+| 内容 | 字段与要求 |
+|-|-|
+| 目标产物 | 可编辑的稿件、改稿、引用/格式结果或结构化写作产物；完成标准：满足题目指定体裁、受众和格式 |
+| 事实与来源映射 | 数字、术语、引用、图表和关键论断的来源/修改记录；完成标准：可逐条回溯，不新增材料外事实 |
+| 版本与边界 | 修改差异、人工确认项、材料缺口和异常；完成标准：结果可继续编辑，未确认部分明确标注 |
+
+正式测试案例、白板和测评结果由平台提供或生成，参赛者无须另交三个测试案例、白板或预先生成的正式答案。材料缺失、无法判断和运行失败要分别说明。
+
+
+
+## Harbor技术提交约定
+
+# Runtime contract
+This is a Skill authoring task. Create /app/submission/SKILL.md and any required text resources. Use valid name/description YAML frontmatter. Do not submit prepared answers or formal test outputs. The evaluator installs the actual Skill under /skills/weekly-skill, then runs official DeepSeek Harness on each fixed original case.
+
+At execution time original input is /input/case.json and task.md. Material and artifacts are provided according to the topic; PDF parsing receives the actual PDF without a pre-extracted answer layer. Read actual files instead of assuming source content from labels. Work under /app/work; final actual results and editable artifacts belong under /app/output, including result.json with all original output_contract fields and case_id. Include honest status, sources, uncertainty and change records. Editable Office/slide/diagram outputs should also have real rendered PDF/PNG previews for inspection. A partial result must identify its limits. Do not fabricate missing software state or scientific data.
+
+Model, source/case versions, runtime, budgets and actual native traces are recorded by the platform; do not invent benchmark scores. Execution budget: 64 model requests, 900 seconds, 16384 tokens per response including reasoning. Save honest partial deliverables early and improve incrementally. Three cases, three repetitions per condition; actual service failures are paused separately. The platform provides/generates any required comparison; participants do not provide hidden tests or whiteboards. Skill resources: at most 50 UTF-8 text files, 500KB each and 2MB total, no symlinks. Runtime artifacts may be binary and are retained independently of final JSON validity.
+
+实际输入文件和原论文是事实依据；不依据错误的领域标签补造数据。
+
+
+Resource entry point: environment/resources.yaml. Bundled files are relative to that directory; declared preinstalled runtime paths describe the pinned image. The actual fixed scientific cases are supplied by the evaluation platform.
+
+
+---
+
+题面已公开，正式提交开放时间以赛事通知为准。
