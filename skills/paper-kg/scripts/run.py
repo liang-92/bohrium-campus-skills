@@ -228,6 +228,9 @@ def main(argv: List[str] | None = None) -> int:
     # The verbatim layer is written as its own file: a reviewer can diff it
     # against the PDF text layer, and doc.json stays free of the duplicate.
     verbatim = d.pop("verbatim_text", "")
+    # Keep the raw layer available to composers (KG quote audit) without
+    # writing a duplicate field into doc.json.
+    doc["verbatim_text"] = verbatim
     if verbatim:
         with open(os.path.join(args.out, "raw_text.txt"), "w",
                   encoding="utf-8", newline="\n") as fh:
@@ -253,6 +256,8 @@ def main(argv: List[str] | None = None) -> int:
                    "figures_dropped": d.get("figures_dropped"),
                    "engine_attempts": (d.get("source") or {}).get("attempts"),
                    "verbatim": {"chars": d.get("verbatim_chars"),
+                                "ratio": ((d.get("quality") or {}).get("verbatim") or {}).get("ratio"),
+                                "missing": ((d.get("quality") or {}).get("verbatim") or {}).get("missing"),
                                 "block_raw_chars": raw_total,
                                 "raw_text_file": "raw_text.txt" if verbatim else None,
                                 "note": "raw_text.txt is the engine text before cleaning; "
@@ -401,12 +406,14 @@ def main(argv: List[str] | None = None) -> int:
     if required:
         try:
             files = pk_deliver.write_required(
-                args.out, required, profile=args.profile, doc=doc, payload=payload,
+                args.out, [r for r in required if r != "result.json"],
+                profile=args.profile, doc=doc, payload=payload,
                 evidence=evidence, uncertainty=uncertainty,
                 case=doc.get("case") or {}, task=doc.get("task") or "",
                 input_dir=args.input)
             done = len([f for f in files if f.get("bytes")])
-            say(f"required files: {done}/{len(required)} written")
+            expected = len([r for r in required if r != "result.json"])
+            say(f"required files: {done}/{expected} written")
         except Exception as exc:
             notes.append(f"deliverable writer failed: {type(exc).__name__}: {exc}")
             uncertainty.setdefault("notes", []).append(
@@ -476,6 +483,29 @@ def main(argv: List[str] | None = None) -> int:
         say(f"self-check failed -> status downgraded to partial "
             f"({len(check.get('problems', []))} problem(s))")
 
+    evidence_items = evidence or []
+    anchored = sum(1 for e in evidence_items
+                   if isinstance(e, dict) and (e.get("anchor") or e.get("block")))
+    quoted = sum(1 for e in evidence_items
+                 if isinstance(e, dict) and str(e.get("quote") or "").strip())
+    self_check = {
+        "case_id": case_id, "profile": args.profile,
+        "status": res.get("status", status),
+        "dimensions": [
+            {"dimension": "required_files", "ok": not (check.get("files_missing") or check.get("files_empty")),
+             "evidence": {"required": check.get("required_files"),
+                          "missing": check.get("files_missing"),
+                          "empty": check.get("files_empty")}},
+            {"dimension": "contract", "ok": not check.get("problems"),
+             "evidence": {"problems": check.get("problem_detail", [])}},
+            {"dimension": "content", "ok": not quality_issues,
+             "evidence": {"issues": quality_issues[:12]}},
+            {"dimension": "evidence", "ok": bool(evidence_items) and anchored == len(evidence_items),
+             "evidence": {"items": len(evidence_items), "anchored": anchored, "quoted": quoted}},
+        ],
+        "overall": bool(check.get("ok")) and res.get("status") == "success",
+    }
+
     res["run"] = {"profile": args.profile, "engine": backend,
                   "fill": {"file": os.path.basename(fill_path) if fill_path else None,
                            "applied": fill_info["applied"],
@@ -486,9 +516,13 @@ def main(argv: List[str] | None = None) -> int:
                   # whether the deliverable passed its own checks without opening
                   # run.log, and `problems` is a count they can recompute.
                   "validation": {"ok": bool(check.get("ok")),
-                                 "structural_ok": bool(check.get("structural_ok")),
-                                 "content_ok": bool(check.get("content_ok")),
-                                 "scope": check.get("scope", "structural"),
+                                 # a flat contract has no separate structural pass;
+                                 # defaulting the flag to False made a clean run
+                                 # read as "structure failed, 0 problems"
+                                 "structural_ok": bool(check.get("structural_ok",
+                                                                 check.get("ok"))),
+                                 "content_ok": bool(check.get("content_ok", True)),
+                                 "scope": check.get("scope", "flat"),
                                  "problems": len(check.get("problems", [])),
                                  "problem_detail": check.get("problems", [])[:8],
                                  "quality_issues": check.get("quality_issues", [])[:8],
@@ -501,6 +535,9 @@ def main(argv: List[str] | None = None) -> int:
                   "seconds": round(time.time() - t0, 1),
                   "blocks": len(d.get("blocks", [])), "tables": len(d.get("tables", [])),
                   "formulas": len(d.get("formulas", [])), "references": len(d.get("references", []))}
+    res["run"]["self_check"] = self_check
+    with open(os.path.join(args.out, "rubric_self_check.json"), "w", encoding="utf-8") as fh:
+        json.dump(self_check, fh, ensure_ascii=False, indent=1)
     pk_result.write(res, os.path.join(args.out, "result.json"))
 
     with open(os.path.join(args.out, "run.log"), "w", encoding="utf-8") as fh:

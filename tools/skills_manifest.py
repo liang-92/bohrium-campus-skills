@@ -596,8 +596,8 @@ python3 scripts/run.py --input /input --out /app/output --profile methods
 3. **表格**：解析出的表格转 `booktabs`（`\\toprule/\\midrule/\\bottomrule`），列数超 6 时截断并注明。
 4. **公式**：公式块进 `equation` 环境，保留原编号文本。
 5. **参考文献**：`thebibliography` + `\\bibitem`，编号与正文 `[n]` 对齐。
-6. **真编译**：检测 `pdflatex/latexmk/xelatex`，编译**两遍**（第二遍让 `\ref`/目录稳定），
-   抓 `!` 开头的错误行；引擎缺失时明确写 `compile.attempted: false`，不谎报成功。
+6. **真编译**：默认检测到 `pdflatex/latexmk/xelatex` 就编译（`PK_TEX_COMPILE=0` 可关闭），
+   跑引擎 → bibtex → 引擎两遍，抓 `!` 开头的错误行；引擎缺失时才写 `compile.attempted: false`，不谎报成功。
 7. **先静态自检**：没有引擎也要能查错——`compile.static_check` 做环境配对（`\\begin/\\end` 是否成对）
    与花括号配平，把“根本编译不过”的源码在提交前就拦下来，而不是等评委编译失败。
 8. **公式可核**：`formula_to_tex` 把 √、希腊字母、上下标映射成 LaTeX 命令并转义 `&%$#_{}`；

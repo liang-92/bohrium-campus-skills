@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -29,6 +30,7 @@ def _flatten(extracted: Dict[str, Any]) -> List[Dict[str, Any]]:
                 lines.append({
                     "text": ln["text"],
                     "bbox": [round(v, 2) for v in ln["bbox"]],
+                    "tokens": ln.get("tokens") or [],
                     "size": ln.get("size", 0.0),
                     "bold": bool(ln.get("bold")),
                     "italic": bool(ln.get("italic")),
@@ -57,7 +59,7 @@ def _ocr_pages(pdf_path: str, pages: List[Dict[str, Any]], lang: str = "eng",
     for p in pages:
         if p["number"] in force:
             pass
-        elif p["chars"] >= backends.MIN_PAGE_CHARS or not p["images"]:
+        elif p["chars"] >= backends.MIN_PAGE_CHARS:
             continue
         png = backends.render_page(pdf_path, p["number"], dpi=220)
         if not png:
@@ -79,8 +81,50 @@ def _ocr_pages(pdf_path: str, pages: List[Dict[str, Any]], lang: str = "eng",
         p["lines"] = lines
         p["chars"] = len(text)
         p["filled_by"] = "ocr"
+        p["ocr_tables"] = [{**t, "page": p["number"]}
+                           for t in structure.extract_ocr_table(text)]
         done.append(p["number"])
     return done
+
+
+def _table_spans(header_rows: List[List[str]]) -> List[Dict[str, Any]]:
+    """Recover merged header cells as explicit row/column coordinates.
+
+    A blank cell in a two-level header is ambiguous: it can be an empty cell or
+    the covered part of a span.  The normalizer keeps blanks precisely because
+    they encode the span; this converts those blanks into machine-readable
+    ``{r, c, rowspan, colspan}`` records so a reviewer does not have to infer
+    the layout from padding.
+    """
+    if not header_rows:
+        return []
+    nrows = len(header_rows)
+    ncols = max(len(r) for r in header_rows)
+    grid = [list(r) + [""] * (ncols - len(r)) for r in header_rows]
+    spans: List[Dict[str, Any]] = []
+    for r in range(nrows):
+        c = 0
+        while c < ncols:
+            text = str(grid[r][c] or "").strip()
+            if not text:
+                c += 1
+                continue
+            colspan = 1
+            # Only the top header row carries column groups.  In the second
+            # row a blank neighbour is the covered half of a top-row colspan,
+            # not a new colspan rooted at the sub-header.
+            if r == 0:
+                while c + colspan < ncols and not str(grid[r][c + colspan] or "").strip():
+                    colspan += 1
+            rowspan = 1
+            while r + rowspan < nrows and not str(grid[r + rowspan][c] or "").strip():
+                rowspan += 1
+            if colspan > 1 or rowspan > 1:
+                spans.append({"r": r, "c": c, "row": r + 1, "col": c + 1,
+                              "rowspan": rowspan, "colspan": colspan,
+                              "text": text})
+            c += colspan
+    return spans
 
 
 def _unreadable(pdf_path: str, extracted: Dict[str, Any]) -> Dict[str, Any]:
@@ -147,6 +191,7 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
     # normalises digits, so a footer "1", "2", "3" counts as a repeated line and
     # would be removed -- taking the pagination evidence with it.
     order = page_order(pages)
+    table_pages = copy.deepcopy(pages)
     heads = layout.strip_running_heads(pages)
     body = layout.body_font_size(pages)
     for p in pages:
@@ -170,16 +215,24 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
     sections, blocks = structure.build_sections(blocks, body)
 
     raw_tables = backends.tables(pdf_path)
+    raw_tables = list(raw_tables) + [t for p in pages for t in p.get("ocr_tables") or []]
     if not raw_tables:
-        raw_tables = structure.detect_tables_from_lines(pages)
+        raw_tables = (structure.detect_tables_from_boxes(table_pages)
+                      or structure.detect_tables_from_lines(table_pages))
+    header_tables = structure.detect_tables_from_header_boxes(table_pages)
+    if header_tables:
+        raw_tables = list(raw_tables) + header_tables
     tables: List[Dict[str, Any]] = []
     for i, t in enumerate(raw_tables, 1):
         norm = structure.normalize_table(t["rows"])
         if norm["n_rows"] < 2 or norm["n_cols"] < 2:
             continue
+        if structure.table_is_prose(norm.get("rows_all") or norm["rows"]):
+            continue
         tables.append({"id": f"t{i}", "page": t["page"], "bbox": t.get("bbox"),
                        "caption": "", "caption_block": None,
                        "header": norm["header"], "header_rows": norm.get("header_rows") or [],
+                       "spans": _table_spans(norm.get("header_rows") or []),
                        "rows": norm.get("data_rows") or norm["rows"],
                        "rows_all": norm["rows"],
                        "data_rows": norm.get("data_rows") or [],
@@ -187,6 +240,31 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
                        "n_cols": norm["n_cols"],
                        "multi_level_header": norm.get("multi_level_header", False),
                        "source": t.get("source", "engine")})
+    if not tables and raw_tables:
+        # The engine's table reader can return prose grids; retry the layout
+        # fallback, which now has the same prose filter.
+        fallback = (structure.detect_tables_from_boxes(table_pages)
+                    or structure.detect_tables_from_lines(table_pages))
+        for i, t in enumerate(fallback, 1):
+            norm = structure.normalize_table(t["rows"])
+            if norm["n_rows"] < 2 or norm["n_cols"] < 2:
+                continue
+            if structure.table_is_prose(norm.get("rows_all") or norm["rows"]):
+                continue
+            tables.append({"id": f"t{i}", "page": t["page"], "bbox": t.get("bbox"),
+                           "caption": "", "caption_block": None,
+                           "header": norm["header"], "header_rows": norm.get("header_rows") or [],
+                           "spans": _table_spans(norm.get("header_rows") or []),
+                           "rows": norm.get("data_rows") or norm["rows"],
+                           "rows_all": norm["rows"],
+                           "data_rows": norm.get("data_rows") or [],
+                           "markdown": norm["markdown"], "n_rows": norm["n_rows"],
+                           "n_cols": norm["n_cols"],
+                           "multi_level_header": norm.get("multi_level_header", False),
+                           "source": t.get("source", "line-gap")})
+    # Attach captions before merging: the continuation rule needs the
+    # "continued" wording that lives in the caption block.
+    structure.attach_captions(blocks, tables, [])
     tables = structure.merge_continuations(tables)
 
     figures = structure.find_figures(pages, tables=tables, blocks=blocks)
@@ -198,6 +276,7 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
     # happens to look like "3.0 Contact" had already become a heading.  Rebuild
     # now that those blocks carry `type=table` and are skipped.
     sections, blocks = structure.build_sections(blocks, body)
+    sections = structure.recover_numbered_sections(pages, sections, verbatim)
     image_tables = find_image_tables(pages, blocks, tables, pdf_path=pdf_path)
 
     formulas = structure.find_formulas(blocks)
@@ -260,7 +339,7 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
         # What the untouched layer had vs. what the blocks carry.  This is the
         # "逐字一致" number, computed here so it also ships in coverage.json;
         # verify.py --pdf recomputes it from the PDF itself.
-        "verbatim": _verbatim_ledger(verbatim, blocks, heads.get("removed") or []),
+        "verbatim": _verbatim_ledger(verbatim, blocks, heads.get("removed") or [], tables),
         "quality": _quality(pages, blocks, tables, formulas, references, empty_pages,
                             figures, figures_dropped, table_region_blocks,
                             garbled, order, image_tables),
@@ -280,7 +359,8 @@ def analyze_path(pdf_path: str, ocr: bool = True) -> Dict[str, Any]:
 
 
 def _verbatim_ledger(raw: str, blocks: List[Dict[str, Any]],
-                     removed: List[Dict[str, Any]]) -> Dict[str, Any]:
+                     removed: List[Dict[str, Any]],
+                     tables: List[Dict[str, Any]] | None = None) -> Dict[str, Any]:
     """Character-multiset audit: the raw layer vs. what the blocks deliver.
 
     `missing` is text the PDF had and the deliverable lost; `extra` is text the
@@ -299,6 +379,14 @@ def _verbatim_ledger(raw: str, blocks: List[Dict[str, Any]],
     layer = pack(raw)
     body = pack("".join(b.get("text_raw") or b.get("text") or "" for b in blocks))
     heads = pack("".join(h.get("text") or "" for h in removed))
+    # A table's cells are delivered in tables/*.csv even when the table region
+    # is correctly excluded from prose blocks.  Count the table cells that are
+    # not already in the blocks so the verbatim ledger does not call a fully
+    # delivered 40-row table "missing text".
+    for t in tables or []:
+        rows = t.get("rows_all") or t.get("rows") or []
+        cells = " ".join(str(c) for row in rows for c in (row or []))
+        body += pack(cells) - body
     kept = layer & (body + heads)
     missing = layer - body - heads
     extra = body - layer
@@ -526,7 +614,24 @@ def _ocr_region(pdf_path: str, item: Dict[str, Any]) -> str:
 def analyze(input_dir: str, ocr: bool = True) -> Dict[str, Any]:
     """Analyse a whole case directory: primary PDF + every supporting material."""
     man = sources.discover(input_dir)
+    # Test sets store task.md/case.json one level above input/.  Reading only
+    # the input directory left every task-dependent composer with an empty
+    # string, so it silently fell back to its generic branch.
+    base = input_dir
+    if not man.get("task_md"):
+        cand = os.path.join(os.path.dirname(os.path.abspath(input_dir)), "task.md")
+        if os.path.exists(cand):
+            man["task_md"] = cand
+    if not man.get("case_json"):
+        cand = os.path.join(os.path.dirname(os.path.abspath(input_dir)), "case.json")
+        if os.path.exists(cand):
+            man["case_json"] = cand
     case = sources.load_case(man["case_json"])
+    if not case or not case.get("case_id"):
+        cand = os.path.join(os.path.dirname(os.path.abspath(input_dir)), "case.json")
+        if os.path.exists(cand):
+            case = sources.load_case(cand)
+            man["case_json"] = cand
     task = sources.read_text(man["task_md"]) if man["task_md"] else ""
     doc: Dict[str, Any] = {
         "schema": "paperkit/case@1",
@@ -600,7 +705,8 @@ def to_markdown(doc: Dict[str, Any], max_blocks: int = 400) -> str:
             continue
         head = f"[{b['id']} p{b['page']}]"
         if tag == "heading":
-            out.append(f"\n{'#' * min(4, max(1, b.get('level', 1)))} {b['text'].strip()}  {head}")
+            label = re.sub(r"\.$", "", b['text'].strip())
+            out.append(f"\n{'#' * min(4, max(1, b.get('level', 1)))} {label}  {head}")
         else:
             out.append(f"{head} {b['text']}")
     figs = d.get("figures") or []

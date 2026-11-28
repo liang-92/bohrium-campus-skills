@@ -56,34 +56,208 @@ def page_stats(page: Dict[str, Any]) -> Dict[str, Any]:
     gutters = layout.find_gutters({"lines": lines, "width": page["width"]})
     height = page["height"]
 
-    merges = 0
+    pairs: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     if gutters and lines:
         a, b = gutters[0]
         left = [l for l in lines if l["bbox"][2] <= a + 2]
         right = [l for l in lines if l["bbox"][0] >= b - 2]
         used = set()
-        for i, l in enumerate(left):
+        for l in left:
             ly0, ly1 = l["bbox"][1], l["bbox"][3]
             for j, r in enumerate(right):
                 ry0, ry1 = r["bbox"][1], r["bbox"][3]
                 overlap = min(ly1, ry1) - max(ly0, ry0)
                 if overlap > 0.5 * min(ly1 - ly0, ry1 - ry0) and j not in used:
                     used.add(j)
-                    merges += 1
+                    pairs.append((l, r))
                     break
     hyphen = sum(1 for l in lines if re.search(r"[A-Za-z]{2,}-$", l["text"].rstrip()))
-    # arXiv/side stamps are rotated 90 degrees: tall narrow boxes.  A naive dump
-    # keeps them as fragments of vertical text inside the body stream.
-    vertical = 0
-    for l in lines:
-        x0, y0, x1, y1 = l["bbox"]
-        w = max(1e-6, x1 - x0)
-        if (y1 - y0) > 3 * w and len(l["text"].strip()) > 8:
-            vertical += 1
+    # Rotated text: tall narrow boxes.  Two different things wear this shape --
+    # the arXiv submission stamp (boilerplate, must go) and rotated axis labels
+    # or narrow table columns (real content, must stay).  They are counted
+    # separately so neither number can be read as the other.
+    stamp = sum(1 for l in lines
+                if tall_narrow(l["bbox"], l["text"]) and STAMP.search(l["text"]))
+    other_rot = sum(1 for l in lines
+                    if tall_narrow(l["bbox"], l["text"]) and not STAMP.search(l["text"]))
     return {"lines": len(lines), "chars": page["chars"], "gutters": len(gutters),
-            "merges": merges, "hyphens": hyphen, "vertical": vertical,
+            "merges": len(pairs), "pairs": pairs, "hyphens": hyphen,
+            "stamp": stamp, "rotated_other": other_rot,
             "margin_lines": [l["text"].strip() for l in lines
                              if l["bbox"][1] < height * 0.08 or l["bbox"][3] > height * 0.92]}
+
+
+# --- the same three rules, applied to what paperkit actually emits -----------
+
+def _owner(blocks: List[Dict[str, Any]], bbox: List[float],
+           text: str = "") -> str | None:
+    """Which block does this line belong to?
+
+    Geometry alone is not enough: a block whose box covers a wide region also
+    covers its neighbours' lines, and taking the first hit then credits it with
+    text it does not contain.  So the containing blocks are ranked by (does the
+    block's text actually hold this line?, smallest area).
+    """
+    cx = (bbox[0] + bbox[2]) / 2.0
+    cy = (bbox[1] + bbox[3]) / 2.0
+    needle = re.sub(r"\s+", " ", text or "").strip().lower()[:60]
+    best, best_key = None, None
+    for b in blocks:
+        bb = b.get("bbox")
+        if not bb:
+            continue
+        if not (bb[0] - 1 <= cx <= bb[2] + 1 and bb[1] - 1 <= cy <= bb[3] + 1):
+            continue
+        hay = re.sub(r"\s+", " ", b.get("text") or "").lower()
+        holds = bool(needle) and needle in hay
+        area = (bb[2] - bb[0]) * (bb[3] - bb[1])
+        key = (0 if holds else 1, area)
+        if best_key is None or key < best_key:
+            best, best_key = b.get("id"), key
+    return best
+
+
+def _flat(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+def _adjacent(left: str, right: str, block_text: str) -> bool:
+    """Is the right-hand line glued directly onto the left-hand one?"""
+    hay, a, b = _flat(block_text), _flat(left), _flat(right)
+    if not a or not b:
+        return False
+    return f"{a} {b}" in hay
+
+
+def kit_welds(pages: List[Dict[str, Any]], stats: List[Dict[str, Any]],
+              blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Of the side-by-side line pairs a y-sort would weld, how many are still
+    welded -- i.e. sit inside a single output block?
+
+    Same pairs, same pages, same geometry as the naive count.  The only thing
+    that changes is the unit the text ended up in, which is the point of the
+    comparison.
+
+    Page-wide *tables* are excluded from the population, not from the numerator:
+    a table region legitimately spans both columns, so a pair whose right-hand
+    line is a table cell was never a cross-column prose weld.  Counting it would
+    charge paperkit for correct behaviour, and excluding it only on paperkit's
+    side would make the two columns incomparable.  `by_page` tells us which
+    blocks are table regions, so the same pairs are dropped on both sides.
+    """
+    by_page: Dict[int, List[Dict[str, Any]]] = {}
+    table_blocks: Dict[int, List[Dict[str, Any]]] = {}
+    for b in blocks:
+        if not b.get("bbox"):
+            continue
+        by_page.setdefault(b.get("page"), []).append(b)
+        if b.get("in_table") or b.get("type") in ("table", "table-cell", "figure"):
+            table_blocks.setdefault(b.get("page"), []).append(b)
+
+    def in_table(page_no, bbox) -> bool:
+        cx = (bbox[0] + bbox[2]) / 2.0
+        cy = (bbox[1] + bbox[3]) / 2.0
+        for b in table_blocks.get(page_no, []):
+            bb = b["bbox"]
+            if bb[0] - 1 <= cx <= bb[2] + 1 and bb[1] - 1 <= cy <= bb[3] + 1:
+                return True
+        return False
+
+    welded = checked = excluded = 0
+    block_text = {b.get("id"): b.get("text") or "" for b in blocks}
+    examples: List[str] = []
+    for p, s in zip(pages, stats):
+        owner_blocks = by_page.get(p["number"], [])
+        for l, r in s.get("pairs", []):
+            if in_table(p["number"], l["bbox"]) or in_table(p["number"], r["bbox"]):
+                excluded += 1
+                continue
+            checked += 1
+            a = _owner(owner_blocks, l["bbox"], l.get("text"))
+            b = _owner(owner_blocks, r["bbox"], r.get("text"))
+            if not a or a != b:
+                continue
+            # Same block is not enough.  A correct XY-cut reads the whole left
+            # column and then the whole right one, so both lines end up in one
+            # paragraph -- in the right order.  A weld is the *interleaved*
+            # order: the right-hand line sits immediately after the left-hand
+            # one.  Only that is a defect, and only that is what a y-sort does.
+            if _adjacent(l.get("text"), r.get("text"), block_text.get(a, "")):
+                welded += 1
+                if len(examples) < 3:
+                    examples.append(f"{a}: {l['text'][:40]!r} + {r['text'][:40]!r}")
+    return {"welded": welded, "checked": checked, "excluded_table": excluded,
+            "examples": examples}
+
+
+def hyphen_pairs(page: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """(tail, head) for every line ending in `-` that has a continuation."""
+    lines = [l for l in flatten(page) if l.get("text", "").strip()]
+    out: List[Tuple[str, str]] = []
+    for cur, nxt in zip(lines, lines[1:]):
+        m = re.search(r"([A-Za-z]{2,})-$", cur["text"].rstrip())
+        if not m:
+            continue
+        m2 = re.match(r"([A-Za-z]{2,})", nxt["text"].strip())
+        if not m2:
+            continue
+        out.append((m.group(1), m2.group(1)))
+    return out
+
+
+def kit_hyphens(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Did the deliverable keep the line-break hyphen, or merge the word?
+
+    The naive side counts *lines* ending in `-`; counting blocks ending in `-`
+    would be a different quantity and would make the two columns incomparable.
+    So the same pairs are looked up in the block text: `atten tion` merged is the
+    fix, `atten-tion` is the residue.
+    """
+    text_by_page: Dict[int, str] = {}
+    for b in blocks:
+        text_by_page.setdefault(b.get("page"), "")
+        text_by_page[b["page"]] += " " + (b.get("text") or "")
+    merged = residual = dropped = checked = 0
+    examples: List[str] = []
+    for p in pages:
+        hay = text_by_page.get(p["number"], "").lower()
+        for tail, head in hyphen_pairs(p):
+            checked += 1
+            joined = (tail + head).lower()
+            broken = (tail + "-" + head).lower()
+            # `pre-train` is a real compound: a line break after its own hyphen
+            # is not a defect, so the merged form wins whenever both exist.
+            # Only `atten-tion` (merged form absent, hyphenated form present) is
+            # residue.
+            if joined in hay:
+                merged += 1
+            elif broken in hay:
+                residual += 1
+                if len(examples) < 3:
+                    examples.append(f"{tail}-{head}")
+            else:
+                dropped += 1
+    return {"checked": checked, "merged": merged, "residual": residual,
+            "dropped": dropped, "examples": examples}
+
+
+def kit_vertical(blocks: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Rotated text still in the deliverable, split stamp vs real content.
+
+    Same rule as the naive side, applied to output blocks: shape *and* text for
+    a stamp, shape alone for "other rotated text".  A rotated axis label that
+    survives is not a defect; a surviving arXiv stamp is.
+    """
+    stamp = other = 0
+    for b in blocks:
+        bb = b.get("bbox")
+        if not bb or not tall_narrow(bb, b.get("text") or ""):
+            continue
+        if STAMP.search(b.get("text") or ""):
+            stamp += 1
+        else:
+            other += 1
+    return {"stamp": stamp, "other": other}
 
 
 def running_heads(pages: List[Dict[str, Any]]) -> int:
@@ -97,6 +271,17 @@ def running_heads(pages: List[Dict[str, Any]]) -> int:
 
 LIGATURES = {"\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl",
              "\ufb03": "ffi", "\ufb04": "ffl", "\ufb05": "st"}
+
+# An arXiv submission stamp: rotated, in the left margin, and identifiable by
+# its own text.  Geometry alone cannot tell it from a rotated axis label
+# ("application" inside a figure) or a narrow table column, so the stamp rule
+# needs both the shape and the text.
+STAMP = re.compile(r"arxiv:\s*\d{4}\.\d{4,5}|\b\d{4}\.\d{4,5}v\d|\[cs\.[A-Z]{2}\]", re.I)
+
+
+def tall_narrow(bbox: List[float], text: str) -> bool:
+    w = max(1e-6, bbox[2] - bbox[0])
+    return (bbox[3] - bbox[1]) > 3 * w and len((text or "").strip()) > 8
 
 
 def char_ledger(engine_text: str, blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -199,10 +384,15 @@ def measure(pdf: str) -> Dict[str, Any]:
     naive = {
         "pages": len(pages),
         "chars": sum(s["chars"] for s in stats),
-        "cross_column_merges": sum(s["merges"] for s in stats),
+        # filled in below: the population is defined by which pairs are prose
+        # rather than table cells, and only the paperkit parse knows that
+        "cross_column_merges": 0,
         "two_column_pages": sum(1 for s in stats if s["gutters"]),
-        "hyphen_splits": sum(s["hyphens"] for s in stats),
-        "vertical_stamp_lines": sum(s["vertical"] for s in stats),
+        # exactly the pairs the hyphen check below looks up, so both columns
+        # count the same events
+        "hyphen_splits": sum(len(hyphen_pairs(p)) for p in pages),
+        "vertical_stamp_lines": sum(s["stamp"] for s in stats),
+        "rotated_other_lines": sum(s["rotated_other"] for s in stats),
         "running_head_lines": running_heads([dict(p, margin_lines=s["margin_lines"])
                                             for p, s in zip(pages, stats)]),
     }
@@ -228,15 +418,33 @@ def measure(pdf: str) -> Dict[str, Any]:
         if key in prev and y0 < prev[key] - 5:
             inv += 1
         prev[key] = y0
+    welds = kit_welds(pages, stats, d["blocks"])
+    hyphens = kit_hyphens(pages, d["blocks"])
+    vert = kit_vertical(d["blocks"])
+    # A y-sort welds every remaining pair by construction, so the naive count is
+    # the size of the population the two pipelines are compared on.
+    naive["cross_column_merges"] = welds["checked"]
+    naive["table_pairs_excluded"] = welds["excluded_table"]
     kit = {
         "pages": d["source"]["pages"],
         "chars": sum(len(b["text"]) for b in d["blocks"]),
         "blocks": len(d["blocks"]),
-        "cross_column_merges": 0,          # XY-cut never welds two columns
+        # measured, not asserted: of the pairs a y-sort would weld, how many
+        # paperkit actually left in one block
+        "cross_column_merges": welds["welded"],
+        "column_pairs_checked": welds["checked"],
+        "welded_examples": welds["examples"],
         "page_order_inversions": inv,
         "order_inversion_rate": round(inv / max(1, len(d["blocks"])), 4),
-        "hyphen_splits": sum(1 for b in d["blocks"] if re.search(r"[A-Za-z]{2,}-$", b["text"])),
+        "hyphen_splits": hyphens["residual"],
+        "hyphen_pairs_checked": hyphens["checked"],
+        "hyphen_merged": hyphens["merged"],
+        "hyphen_dropped": hyphens["dropped"],
+        "hyphen_residue_examples": hyphens["examples"],
         "stray_headers_removed": d["running_heads_removed"],
+        # same rule as the naive side, applied to output blocks
+        "vertical_stamp_lines": vert["stamp"],
+        "rotated_other_lines": vert["other"],
         "vertical_residue": sum(1 for b in d["blocks"]
                                 if re.search(r"arxiv:\s*\d{4}\.\d{4,5}", b["text"], re.I)),
         "sections": len(d["sections"]),
@@ -296,15 +504,16 @@ def to_markdown(rows: List[Dict[str, Any]]) -> str:
             "- **契约回填**：用 `_test/` 里案例声明过的 10 个字段做**探针契约**，"
             "检查键名逐字、类型一致、填不出的字段是否如实标 `unsupported`。"
             "它是机械性检查，不涉及内容对错。", "",
-            "## 失败项对照（越低越好）", "",
+            "## 失败项对照（越低越好，分母是同一批事件）", "",
             "| 文件 | 页 | 双栏页 | 串栏拼接（朴素） | 串栏拼接（paperkit） "
-            "| 断词残留（朴素） | 断词残留（paperkit） | 竖排边条残段（朴素） | 剔除的页眉行（paperkit） |",
+            "| 断词残留（朴素） | 断词残留（paperkit） | arXiv 提交戳（朴素） | arXiv 提交戳（paperkit） |",
             "|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         n, k = r["naive"], r["paperkit"]
-        out.append(f"| {r['pdf']} | {n['pages']} | {n['two_column_pages']} | {n['cross_column_merges']} | "
-                   f"{k['cross_column_merges']} | {n['hyphen_splits']} | {k['hyphen_splits']} | "
-                   f"{n['vertical_stamp_lines']} | {k['stray_headers_removed']} |")
+        out.append(f"| {r['pdf']} | {n['pages']} | {n['two_column_pages']} | "
+                   f"{n['cross_column_merges']} | {k['cross_column_merges']}/{k['column_pairs_checked']} | "
+                   f"{n['hyphen_splits']} | {k['hyphen_splits']}/{k['hyphen_pairs_checked']} | "
+                   f"{n['vertical_stamp_lines']} | {k['vertical_stamp_lines']} |")
     out += ["", "## 朴素输出拿不到、paperkit 才能交付的东西", "",
             "| 文件 | 结构化章节 | 表格 | 图 | 公式 | 参考文献 | 带页码+块号的块 | 阅读顺序倒挂 |",
             "|---|---|---|---|---|---|---|---|"]
@@ -312,16 +521,27 @@ def to_markdown(rows: List[Dict[str, Any]]) -> str:
         k = r["paperkit"]
         out.append(f"| {r['pdf']} | {k['sections']} | {k['tables']} | {k['figures']} | {k['formulas']} | "
                    f"{k['references']} | {k['blocks_with_anchor']}/{k['blocks']} | {k['page_order_inversions']} |")
-    out += ["", "补充读法：", "",
-            "- **串栏拼接**：同一 y 高度上左右两栏各有一行时，任何「按 y 从上往下」的输出都会把两行焊成一句；"
-            "paperkit 用 XY-cut 只在能把区域完整二分的缝隙处切栏，结构上不产生这种拼接。"
-            "注意 `1706.03762` 本身是单栏排版（仅 2 页出现双栏带），该项对它天然接近 0，"
-            "真正的对照看 BERT 与 ACL 两篇。",
-            "- **断词残留**：行末 `atten-` + 下行 `tion` 是 PDF 换行造成的，朴素输出保留，paperkit 在段落重建时合并。"
-            "BERT 剩余的 4 处是真实复合词（如 `pre-` 开头的构词），不是断词。",
-            "- **竖排边条残段**：arXiv 左侧 90° 旋转的提交戳，朴素输出会把它切成十几段竖排碎片混在正文里；"
-            "paperkit 按旋转+位置规则识别并整体剔除。",
-            "- **剔除的页眉行**：paperkit 实际删掉的页边行数，删完正文里不再有 arXiv 戳（残留 0）。", "",
+    out += ["", "补充读法（每项都**用同一规则量两边**，否则两列不可比）：", "",
+            "- **串栏拼接**：朴素侧的分子是「同一 y 带上左右两栏各有一行、按 y 排序必然被焊成一句」"
+            "的行对数（按定义全部会被焊死，所以等于检查过的行对数）。"
+            "paperkit 侧把**同一批行对**拿去查两件事：是否落进同一个输出块，以及"
+            "右行是否**紧接**在左行之后。两条都成立才算真的被焊死——"
+            "正确的双栏读序是先读完左栏再读右栏，两行同样在同一个段落里，但顺序不是交错的。"
+            "表格区域内的行对两边都不计入（表格本就横跨两栏），并把排除数写进 JSON 的"
+            "`table_pairs_excluded`，可以核。"
+            "`1706.03762` 是单栏排版，该项对它天然为 0，真正的对照看 BERT 与 ACL 两篇。",
+            "- **断词残留**：朴素侧的分子是「行末 `atten-` + 下行 `tion`」这样的断词对；"
+            "paperkit 侧查同一批断词对在输出里是 `attention`（已合并）还是 `atten-tion`（仍断开）。"
+            "`pre-train` 这类真实复合词换行处本来就该带连字符，只要合并形式存在于输出中就记为已合并且不算残留。"
+            "分母是断词对总数；只有两边都比同一批事件，这个减少量才是同一件事。"
+            "仍断开的会列进 JSON 的 `hyphen_residue_examples`，可逐条复核。",
+            "- **arXiv 提交戳**：需要**形状 + 文字**两个条件——框高 > 3×框宽，且文本匹配"
+            "`arXiv:1706.03762v7` / `[cs.CL]` 这类提交戳特征。只用形状是不够的："
+            "插图里旋转的轴标签（`governments`、`application`）和宽表的窄列单元格同样是细高框，"
+            "但它们是真内容，删掉才是错。这两类在 JSON 里分别记 `vertical_stamp_lines` 与"
+            "`rotated_other_lines`，后者不进这张表。",
+            "- **剔除的页眉行**（`stray_headers_removed`）：paperkit 实际删掉的页边行数，"
+            "写在 JSON 里但不进这张表——朴素侧没有对应量，放进来会造成不可比的错觉。", "",
             "局限与边界：", "",
             "1. 本表只覆盖 3 篇公开英文论文；单栏中文期刊、扫描件、加密 PDF 未纳入。数字说明差异的量级，"
             "不代表所有 PDF 上同比例成立。",

@@ -17,10 +17,10 @@
 
 | 用例 | 页 | 块 | 表格 | 公式 | 参考文献 | 阅读顺序倒挂 | verify.py | 状态 |
 |---|---|---|---|---|---|---|---|---|
-| case-single | 15 | 268 | 4 | 7 | 41 | **0** | 通过 | complete |
-| case-twocol | 6 | 174 | 3 | 0 | 23 | **0** | 通过 | complete |
+| case-single | 15 | 213 | 4 | 5 | 40 | **0** | 通过 | complete |
+| case-twocol | 6 | 156 | 3 | 1 | 47 | **0** | 通过 | complete |
 
-paper-refs 对 case-single：41 条引用证据、`output_contract` 9 字段全填充、status=complete。
+paper-refs 对 case-single：40 条引用证据、`output_contract` 9 字段全填充、status=complete。
 
 **损坏 PDF（case-broken）**：`status=unable`，uncertainty 明确记录
 `FileDataError: Failed to open file ... as type pdf`，不生成文档结构。
@@ -89,7 +89,7 @@ python run_matrix.py          # 10 包 × 2 篇真实论文 + verify.py 回归
 
 | 项目 | 结果 |
 |---|---|
-| 自建用例 | **17/17 通过，34/34 断言** |
+| 自建用例 | **18/18 通过，44/44 断言** |
 | 异常用例 | 6/6 均为 `status=unable` 且写出 `result.json`（加密 / 整页图片 / 损坏 / 无 PDF / 零页 / 图片型表格） |
 | 十包 × 两篇真论文 | 20/20 成功，`verify.py` 全通过（translate 记 `pending`） |
 | 生成物 | `report.md` / `report.json` / `matrix.md` / `matrix.json` |

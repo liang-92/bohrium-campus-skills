@@ -186,22 +186,81 @@ def _table_from_rows(rows: List[List[str]], n: int, source: str) -> Dict[str, An
             "n_rows": len(rows), "n_cols": width, "source": source}
 
 
+def _bib_fields(body: str) -> Dict[str, str]:
+    """Read `name = {value}` pairs with brace matching.
+
+    A line-based regex reads `volume = {41}, pages = {D458--D463}` as one
+    field ("41}, pages = {D458") and drops the DOI on the same line, which is
+    how a six-entry .bib turned into six records with no identifiers at all.
+    """
+    out: Dict[str, str] = {}
+    i, n = 0, len(body)
+    key_rx = re.compile(r"([A-Za-z]+)\s*=\s*")
+    while i < n:
+        m = key_rx.search(body, i)
+        if not m:
+            break
+        key, j = m.group(1).lower(), m.end()
+        if j < n and body[j] == "{":
+            depth, k = 1, j + 1
+            while k < n and depth:
+                if body[k] == "{":
+                    depth += 1
+                elif body[k] == "}":
+                    depth -= 1
+                k += 1
+            out[key] = body[j + 1:k - 1]
+            i = k
+        else:
+            mm = re.compile(r"[^\n,]+").search(body, j)
+            out[key] = (mm.group(0).strip() if mm else "")
+            i = mm.end() if mm else j + 1
+    return out
+
+
+def _bib_initials(authors: str) -> str:
+    """`Fout, Alex, Byrd, Jonathon` -> `A. Fout, J. Byrd`.
+
+    The reference parser keys on the "initials before surname" shape; handing
+    it the bib's surname-first list makes it read "Fout" as the title.
+    """
+    toks = [t.strip() for t in authors.split(",") if t.strip()]
+    out: List[str] = []
+    i = 0
+    while i < len(toks):
+        surname = toks[i]
+        given = toks[i + 1] if i + 1 < len(toks) else ""
+        if given and re.match(r"^(?:[A-Z][a-zA-Z.'’\-]*\s*)+$", given):
+            ini = " ".join(f"{w[0]}." for w in re.findall(r"[A-Z][a-zA-Z]*", given))
+            out.append(f"{ini} {surname}".strip())
+            i += 2
+        else:
+            out.append(surname)
+            i += 1
+    return ", ".join(out)
+
+
 def _bib_entries(raw: str) -> List[Dict[str, str]]:
     out = []
-    for m in re.finditer(r"@(\w+)\{([^,]+),(.*?)\n\}", raw, re.S):
-        fields = dict(re.findall(r"(\w+)\s*=\s*\{(.*?)\},?\s*\n", m.group(3), re.S))
+    for m in re.finditer(r"@(\w+)\{([^,\n]+),([\s\S]*?)\n\}", raw):
+        fields = _bib_fields(m.group(3))
         authors = re.sub(r"\s+and\s+", ", ", fields.get("author", "")).replace("{", "").replace("}", "")
-        venue = fields.get("journal") or fields.get("booktitle") or ""
-        year = fields.get("year", "")
-        vol = fields.get("volume", "")
-        pages = fields.get("pages", "")
+        venue = (fields.get("journal") or fields.get("booktitle") or
+                 fields.get("publisher") or "")
+        year = fields.get("year", "").strip()
+        vol = fields.get("volume", "").strip()
+        pages = fields.get("pages", "").strip()
+        doi = fields.get("doi", "").strip()
         tail = f", {vol}" if vol else ""
         tail += f": {pages}" if pages else ""
-        text = f"{authors}. {fields.get('title','').strip()}. {venue}, {year}{tail}."
+        title = re.sub(r"\s+", " ", fields.get("title", "")).strip()
+        text = f"{_bib_initials(authors)}. {title}. {venue}, {year}{tail}."
+        if doi:
+            text += f" doi:{doi}"
         out.append({"key": m.group(2).strip(), "type": m.group(1).lower(),
-                    "authors": authors, "title": fields.get("title", "").strip(),
+                    "authors": authors, "title": title,
                     "year": year, "venue": venue, "volume": vol, "pages": pages,
-                    "doi": fields.get("doi", ""), "text": re.sub(r"\s+", " ", text)})
+                    "doi": doi, "text": re.sub(r"\s+", " ", text)})
     return out
 
 

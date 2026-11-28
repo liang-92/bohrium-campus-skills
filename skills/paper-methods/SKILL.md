@@ -49,6 +49,9 @@ cd "$SKILL_DIR" || exit 1
 # 0.5) 环境探测：装了哪些引擎/OCR。缺了会降级，脚本不假设任何东西存在
 python3 scripts/run.py --probe
 
+# 0.6) LaTeX：默认检测到 TeX 引擎就编译；只做静态检查时显式关闭
+#      PK_TEX_COMPILE=0 python3 scripts/run.py --input /input --out /app/output
+
 # 1) 一次跑完解析 + 组包
 python3 scripts/run.py --input /input --out /app/output
 

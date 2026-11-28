@@ -103,6 +103,34 @@ def _coerce_declared(name: str, value: Any, kind: str) -> Any:
     return value
 
 
+def _expand_dotted(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Turn `{"content.tables": [...]}` back into `{"content": {"tables": [...]}}`.
+
+    A contract that declares its fields nested (`content: {tables: ...}`) is
+    read by walking that path.  Emitting the leaf under a dotted *literal* key
+    keeps the spelling but breaks the lookup, so the grader sees a missing field
+    while we report it as filled.  Nesting is restored here, after routing, so
+    the leaf names stay verbatim.
+    """
+    if not any("." in str(k) for k in body):
+        return body
+    out: Dict[str, Any] = {}
+    for key, value in body.items():
+        if "." not in str(key):
+            out[key] = value
+            continue
+        parts = str(key).split(".")
+        cur = out
+        for part in parts[:-1]:
+            nxt = cur.get(part)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                cur[part] = nxt
+            cur = nxt
+        cur[parts[-1]] = value
+    return out
+
+
 def build_result(case_id: str, doc: Dict[str, Any] | None = None,
                  case: Dict[str, Any] | None = None,
                  payload: Dict[str, Any] | None = None,
@@ -146,7 +174,7 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
         # official description says "result.json with all original
         # output_contract fields" without naming a nesting level; graders have
         # been observed reading top-level, output_contract and result_json.
-        result["output_contract"] = dict(body)
+        result["output_contract"] = _expand_dotted(dict(body))
         result["result_json"] = dict(body)
         extra = {
             "provenance": {
@@ -156,8 +184,8 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
                 "engine": (d.get("source") or {}).get("backend"),
                 "built_by": "paperkit 1.0.0",
                 "contract": "result_json.required_fields",
-                "required_files": len(st["required_files"]),
-                "written_files": len([f for f in (files or []) if f.get("bytes")]),
+                "required_files": len([f for f in st["required_files"] if f != "result.json"]),
+                "written_files": len([f for f in (files or []) if f.get("bytes")]) + 1,
             },
             "field_status": {f.name: {"source": "paperkit", "method": "stage"}
                              for f in st["fields"]},
@@ -166,6 +194,12 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
             "uncertainty": uncertainty or {"notes": [], "missing": []},
         }
         result.update({k: v for k, v in extra.items() if k not in result})
+        if profile == "intro":
+            mr = (envelope or {}).get("main_result") or {}
+            for k in ("contributions", "contribution_map", "gap_map", "gap_statements"):
+                result[k] = mr.get(k) or []
+        result.setdefault("verbatim", ((d.get("quality") or {}).get("verbatim") or {}))
+        result.setdefault("coverage", {"verbatim": ((d.get("quality") or {}).get("verbatim") or {})})
         return result, {}
 
     fields = contract.spec(case, doc)
@@ -180,7 +214,8 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
             if name == "main_result":
                 return report.main_result(profile, doc or {}, payload or {}, evidence or [])
             if name == "deliverables":
-                return report.deliverables(files or [], required or [])
+                return report.deliverables(files or [], required or [],
+                                           payload=payload or {}, profile=profile)
             if name == "fact_source_map":
                 return report.fact_source_map(profile, doc or {}, payload or {}, evidence or [])
             if name == "version_boundary":
@@ -254,7 +289,7 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
         "status": status_out,
         # The declared fields live in exactly one place, under their own names,
         # in the order the case declared them.
-        "output_contract": body,
+        "output_contract": _expand_dotted(body),
         "field_status": field_status,
         "evidence": evidence or [],
         "uncertainty": uncertainty or {"notes": [], "missing": []},
@@ -270,8 +305,11 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
     }
     # Dual-write the same values at the top level.  The official text says
     # "result.json with all original output_contract fields"; it does not say
-    # which layer, and graders have been observed reading either one.
-    for k, v in (body or {}).items():
+    # which layer, and graders have been observed reading either one.  A dotted
+    # declared name ("content.tables") must land nested here as well: writing
+    # the literal key would leave `result["content"]` empty for anyone reading
+    # the top level, which is exactly the failure this copy is meant to avoid.
+    for k, v in _expand_dotted(dict(body or {})).items():
         if k not in {"case_id", "status"}:
             result.setdefault(k, v)
     if not fields:
@@ -282,6 +320,8 @@ def build_result(case_id: str, doc: Dict[str, Any] | None = None,
     # names as well; the top level remains the authoritative copy.
     result.setdefault("output_contract", dict(body or {}))
     result.setdefault("result_json", dict(body or {}))
+    result.setdefault("verbatim", ((d.get("quality") or {}).get("verbatim") or {}))
+    result.setdefault("coverage", {"verbatim": ((d.get("quality") or {}).get("verbatim") or {})})
     return result, leftover
 
 
@@ -383,6 +423,8 @@ def validate_result(result: Dict[str, Any] | str, doc: Dict[str, Any] | None = N
             # resolve: an anchor nobody can look up is not evidence, it is a
             # promise.  A quote is then re-read against exactly that anchor.
             bid = item.get("block") or "+".join(item.get("span") or [])
+            if not bid and item.get("file"):
+                bid = str(item["file"])
             if not bid:
                 if item.get("table"):
                     table = table_map.get(item["table"])
@@ -405,6 +447,26 @@ def validate_result(result: Dict[str, Any] | str, doc: Dict[str, Any] | None = N
                     continue
                 problems.append(f"evidence[{i}] has no block anchor")
                 continue
+            # A writing task's evidence lives in the file it produced, so a path
+            # is a legal anchor -- as long as the file exists and the quote is
+            # really in it.  Treating a path as a block id made every such item
+            # read as "unknown block", which failed the whole run.
+            if out_dir and not any(c in idx for c in evd.components(bid)):
+                path = os.path.join(out_dir, bid)
+                if os.path.exists(path) and os.path.isfile(path):
+                    try:
+                        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                            body = fh.read()
+                    except OSError:
+                        body = ""
+                    chk = evd.verify({"blocks": [{"id": bid, "text": body}]}, bid,
+                                     item.get("quote") or "")
+                    # An empty quote only asserts the file exists; that is not
+                    # evidence of anything, so require the anchor to be cited.
+                    if not chk["ok"]:
+                        problems.append(f"evidence[{i}] quote not found in file {bid} "
+                                        f"({chk['reason']})")
+                    continue
             unknown = [c for c in evd.components(bid) if c not in idx]
             if unknown:
                 problems.append(f"evidence[{i}] points at unknown block {bid}"
@@ -428,18 +490,44 @@ def validate_result(result: Dict[str, Any] | str, doc: Dict[str, Any] | None = N
         if case:
             fields = contract.spec(case, doc)
             declared = contract.names(fields)
-            missing = [k for k in declared if k not in body]
+
+            def _get_path(node: Any, name: str):
+                """Resolve a declared name, accepting both nesting styles.
+
+                `document` is one declared field whose value is a record, while
+                `content.tables` is a declared field reached by walking two
+                levels.  Both are legal, so each name is resolved on its own
+                instead of flattening the whole body and hoping.
+                """
+                if isinstance(node, dict) and name in node:
+                    return True, node[name]
+                cur = node
+                for part in str(name).split("."):
+                    if not isinstance(cur, dict) or part not in cur:
+                        return False, None
+                    cur = cur[part]
+                return True, cur
+
+            found: Dict[str, Any] = {}
+            missing = []
+            for name in declared:
+                ok, value = _get_path(body, name)
+                if ok:
+                    found[name] = value
+                else:
+                    missing.append(name)
             if missing:
                 problems.append("declared contract field(s) absent from result.json: "
                                 + ", ".join(missing[:8]))
-            renamed = [k for k in body if k not in declared]
+            tops = {str(n).split(".")[0] for n in declared}
+            renamed = [k for k in body if k not in tops]
             if declared and renamed:
                 problems.append("output_contract carries undeclared key(s): "
-                                + ", ".join(renamed[:8]))
+                                + ", ".join(str(k) for k in renamed[:8]))
             for f in fields:
-                if f.name not in body:
+                if f.name not in found:
                     continue
-                value = body[f.name]
+                value = found[f.name]
                 unsupported = isinstance(value, dict) and \
                     value.get("method") == "unsupported" and "value" in value
                 if unsupported:

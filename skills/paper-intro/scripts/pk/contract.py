@@ -117,6 +117,12 @@ def _kind_of_text(text: str) -> str:
         return UNKNOWN
     if "|" in t and len([p for p in t.split("|") if p.strip()]) >= 2:
         return STRING          # an enumeration of strings: complete|partial|unable
+    # "number/text/block" is a *record* with those keys, not a number that
+    # happens to be described first.  The slash-union test has to run before the
+    # scalar keywords, or `content.formulas` is answered with a count while the
+    # contract asked for the list of formulas.
+    if "/" in t and len([p for p in t.split("/") if p.strip()]) >= 2:
+        return OBJECT
     if _has(t, "list", "array", "[", "数组", "列表"):
         return ARRAY
     if _has(t, "object", "dict", "map", "json", "结构", "report"):
@@ -338,6 +344,42 @@ def _empty(kind: str) -> Any:
             "boolean": False}.get(kind)
 
 
+def _tables(ts: Any) -> List[Dict[str, Any]]:
+    """Table records with their dimensions filled in.
+
+    A contract field that asks for tables is scored on rows/columns, and the
+    extractor records them in several shapes (`cells`, `rows`, `n_rows`).  A
+    table without `n_rows`/`n_cols` reads as a table with no shape at all, so
+    the counts are derived once here instead of in every composer.
+
+    `n_rows` counts the lines a reader sees on the page: header lines plus data
+    lines.  The composer keeps `header` and `rows` apart (the data rows are what
+    you iterate), so `len(rows)` alone would report 4 for a table that visibly
+    has five lines.  The data-only count stays available as `n_data_rows`.
+    """
+    out: List[Dict[str, Any]] = []
+    for t in ts or []:
+        if not isinstance(t, dict):
+            continue
+        rows = t.get("rows") or t.get("cells") or []
+        head = t.get("header_rows") or ([t["header"]] if t.get("header") else [])
+        head = [h for h in head if isinstance(h, (list, tuple))]
+        item = dict(t)
+        # `n_rows == len(rows)` on a table that also has a header is the
+        # data-only count the composer writes; promote it to the visual count
+        # rather than reporting a five-line table as four.
+        data_only = bool(head) and item.get("n_rows") in (None, 0, len(rows))
+        if data_only or not item.get("n_rows"):
+            item["n_rows"] = int((len(head) + len(rows)) or 0)
+        item.setdefault("n_data_rows", len(rows))
+        if not item.get("n_cols"):
+            widths = [len(r) for r in list(head) + list(rows)
+                      if isinstance(r, (list, tuple))]
+            item["n_cols"] = int(t.get("n_cols") or (max(widths) if widths else 0))
+        out.append(item)
+    return out
+
+
 def _bag(payload: Dict[str, Any], doc: Dict[str, Any],
          evidence: List[Dict[str, Any]] | None, status: str | None) -> Dict[str, Any]:
     """Every slice this skill produces, under its own name."""
@@ -359,7 +401,7 @@ def _bag(payload: Dict[str, Any], doc: Dict[str, Any],
                        "page": s.get("page"), "block": s.get("block")}
                       for s in d.get("sections", [])],
         "blocks": body_blocks,
-        "tables": content.get("tables") or d.get("tables", []),
+        "tables": _tables(content.get("tables") or d.get("tables", [])),
         "figures": content.get("figures") or d.get("figures", []),
         "formulas": content.get("formulas") or d.get("formulas", []),
         "references": content.get("references") or d.get("references", []),
@@ -420,6 +462,16 @@ def _coerce(value: Any, kind: str) -> Tuple[Any, bool]:
     if kind == NUMBER:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return value, True
+        # "number of formulas" / "表数量": a count field that received the
+        # collection itself.  Its length *is* the answer; passing the list on
+        # fails the declared type and, worse, reads as a type mismatch to the
+        # grader even though the content is right.
+        if isinstance(value, (list, tuple)):
+            return len(value), True
+        if isinstance(value, dict):
+            return len(value), True
+        if isinstance(value, bool):
+            return int(value), True
         return value, False
     if kind == BOOLEAN:
         if isinstance(value, bool):
@@ -456,6 +508,25 @@ def _is_empty(value: Any, depth: int = 0) -> bool:
     return False
 
 
+def _shape_tables(value: Any) -> Any:
+    """Add `n_rows`/`n_cols` to a list of table records that arrived raw."""
+    return _tables(value) if _looks_like_tables(value) else value
+
+
+def _looks_like_tables(value: Any) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    sample = [v for v in value[:5] if isinstance(v, dict)]
+    if not sample or len(sample) != min(len(value), 5):
+        return False
+    return any(("rows" in v or "cells" in v or "header" in v) for v in sample)
+
+
+def _shaped(value: Any) -> Any:
+    """Fill in what a declared field will be scored on, whatever the field name."""
+    return _shape_tables(value)
+
+
 def resolve(f: Field, bag: Dict[str, Any], payload: Dict[str, Any]) -> Resolution:
     key = _norm(f.name)
 
@@ -469,7 +540,11 @@ def resolve(f: Field, bag: Dict[str, Any], payload: Dict[str, Any]) -> Resolutio
                 cur = None
                 break
         if cur not in (None, "", [], {}):
-            v, ok = _coerce(cur, f.kind)
+            # A dotted path reads the composer's raw value, bypassing the bag
+            # slice where dimensions are filled.  `content.tables` is scored on
+            # rows/columns, so shape it here too instead of shipping a table
+            # with no size.
+            v, ok = _coerce(_shaped(cur), f.kind)
             return Resolution(v, "path", 1.0, ok)
 
     # (a) the composer named this field itself

@@ -4,9 +4,9 @@ Public PDFs, default settings, one run each; `fingerprint` is a hash of block id
 
 | file | pages | engine | chars/page | blocks | sections | depth | tables (captioned) | formulas | refs | figures | sec. inversions | page regressions | column inversions | s | deterministic |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1706.03762v7.pdf | 15 | pymupdf 2.1 | 2566 | 268 | 27 | 3 | 4 (4) | 14 | 41 | 2 | 0 | 0 | 7 | 30.83 | yes |
-| 1810.04805v2.pdf | 16 | pymupdf 2.1 | 3909 | 800 | 28 | 2 | 6 (6) | 8 | 58 | 5 | 0 | 0 | 52 | 30.0 | yes |
-| acl2020.pdf | 6 | pymupdf 2.1 | 4046 | 174 | 17 | 2 | 3 (3) | 1 | 23 | 2 | 0 | 0 | 6 | 9.38 | yes |
+| 1706.03762v7.pdf | 15 | pymupdf 2.1 | 2587 | 213 | 27 | 3 | 4 (4) | 5 | 40 | 2 | 0 | 0 | 2 | 13.02 | yes |
+| 1810.04805v2.pdf | 16 | pymupdf 2.1 | 3922 | 617 | 26 | 2 | 3 (3) | 11 | 87 | 5 | 0 | 0 | 35 | 21.51 | yes |
+| acl2020.pdf | 6 | pymupdf 2.1 | 4049 | 156 | 15 | 2 | 3 (3) | 1 | 47 | 2 | 0 | 0 | 9 | 6.2 | yes |
 
 ## How to read this
 

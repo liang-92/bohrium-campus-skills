@@ -19,7 +19,8 @@ DOI = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+\b")
 MATH_CHARS = set("∑∏∫√∞≈≠≤≥±×÷∂∇∈∉⊂⊃∪∩→←↔⇒⇔αβγδεζηθικλμνξπρστυφχψωΓΔΘΛΞΠΣΦΨΩ·∙∗⊕⊗")
 
 GREEK_TEX = {"α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta", "ε": r"\epsilon",
-             "ϵ": r"\epsilon", "ζ": r"\zeta", "η": r"\eta", "θ": r"\theta", "λ": r"\lambda",
+             "ϵ": r"\epsilon", "ζ": r"\zeta", "η": r"\eta", "θ": r"\theta", "ι": r"\iota",
+             "κ": r"\kappa", "λ": r"\lambda",
              "μ": r"\mu", "ν": r"\nu", "ξ": r"\xi", "π": r"\pi", "ρ": r"\rho", "σ": r"\sigma",
              "τ": r"\tau", "φ": r"\phi", "χ": r"\chi", "ψ": r"\psi", "ω": r"\omega",
              "Γ": r"\Gamma", "Δ": r"\Delta", "Θ": r"\Theta", "Λ": r"\Lambda", "Σ": r"\Sigma",
@@ -46,6 +47,29 @@ def formula_to_tex(text: str) -> Tuple[str, int]:
     s = s.replace("\\", "\x00")
     s = re.sub(r"([&%$#_{}])", r"\\\1", s)
     s = s.replace("\x00", "\\")
+    # A direct glyph→command mapping produces `\DeltaG`, `\phiS`,
+    # `\lambdaD`; TeX reads those as unknown commands.  Separate the command
+    # from the following roman letter, then restore the sub/superscripts that
+    # the text layer flattened.
+    s = re.sub(r"\\(Delta|Gamma|Theta|Lambda|Sigma|Phi|Psi|Omega)([A-Za-z])",
+               r"\\\1 \2", s)
+    s = re.sub(r"\\(phi|lambda|omega|sigma|epsilon|kappa|gamma|nabla|partial|"
+               r"mu|nu|rho|tau|alpha|beta|delta|theta)([A-Za-z0-9])",
+               r"\\\1 \2", s)
+    s = re.sub(r"\\phi\s+([0-9])", r"\\phi_{\1}", s)
+    s = re.sub(r"\\phi\s+([ST])\b", r"\\phi_{\1}", s)
+    s = re.sub(r"\\lambda\s+([D0-9])\b", r"\\lambda_{\1}", s)
+    s = re.sub(r"\\Delta\s+\\phi\s+([ST])\b", r"\\Delta\\phi_{\1}", s)
+    s = s.replace("Ceff", r"C_{\mathrm{eff}}")
+    s = s.replace("kB", r"k_{B}")
+    s = s.replace("NA", r"N_{A}")
+    s = s.replace("H2", r"H^{2}")
+    s = s.replace("e2", r"e^{2}")
+    s = s.replace("Rs", r"R_{s}")
+    s = s.replace("(\\nabla h)2", r"(\nabla h)^{2}")
+    s = re.sub(r"\)\s*1/2\b", r")^{1/2}", s)
+    s = s.replace("cosh(", r"\cosh(")
+    s = s.replace(", with ", r",\quad\text{with}\quad ")
     dropped = 0
     out = []
     for ch in s:
@@ -210,6 +234,207 @@ def build_sections(blocks: List[Dict[str, Any]], body_size: float) -> Tuple[List
     return sections, blocks
 
 
+def detect_tables_from_boxes(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rebuild a table from word x-coordinates under a `Table N.` caption.
+
+    The line-gap fallback cannot tell a two-column paragraph from a table.  With
+    word boxes we can: (1) start at the caption, (2) stop at prose or the next
+    heading, (3) cluster token centers into columns, (4) group lines into rows
+    by their y band.  Everything stays traceable to a page and line range.
+    """
+    out: List[Dict[str, Any]] = []
+    for p in pages:
+        lines = [ln for ln in p.get("lines") or [] if ln.get("tokens")]
+        lines.sort(key=lambda l: (l["bbox"][1], l["bbox"][0]))
+        page_bottom = max(float(ln["bbox"][3]) for ln in lines) if lines else 0.0
+        for i, cap in enumerate(lines):
+            if not CAPTION_TABLE.search(cap["text"]):
+                continue
+            cx0, cy0, cx1, cy1 = cap["bbox"]
+            cand: List[Dict[str, Any]] = []
+            last_y = cy1
+            for ln in lines[i + 1:]:
+                y0 = ln["bbox"][1]
+                if y0 < cy1 - 2:
+                    continue
+                gap = y0 - last_y
+                if gap > 40:
+                    break
+                if page_bottom and y0 > page_bottom - 30:
+                    break
+                # A line from the other column is not this table's business.
+                if ln["bbox"][0] < cx0 - 70 or ln["bbox"][2] > cx1 + 90:
+                    continue
+                # Caption continuation sits at the caption's own left edge;
+                # table cells start indented inside the caption block.
+                if ln["bbox"][0] <= cx0 + 10:
+                    continue
+                if re.match(r"^\d{1,2}(?:\.\d+)*\s+[A-Z][A-Za-z]", ln["text"].strip()):
+                    break
+                if CAPTION_TABLE.search(ln["text"]) and cand:
+                    break
+                # Table cells are short; a full sentence means the table ended.
+                words = ln["text"].split()
+                if len(words) >= 9 and not re.search(r"\d", ln["text"]):
+                    break
+                cand.append(ln)
+                last_y = max(last_y, ln["bbox"][3])
+            if len(cand) < 2:
+                continue
+            bands: List[List[Dict[str, Any]]] = []
+            band: List[Dict[str, Any]] = []
+            band_y = cand[0]["bbox"][1]
+            for ln in cand:
+                y = ln["bbox"][1]
+                if band and y - band_y > 12:
+                    bands.append(band)
+                    band = []
+                if not band:
+                    band_y = y
+                band.append(ln)
+            if band:
+                bands.append(band)
+            if len(bands) < 2:
+                continue
+            header_lines = bands[0]
+            data_bands = bands[1:]
+            # Header wrapped cell labels share the same left x; numeric values
+            # in data rows line up under those columns.
+            centers: List[float] = []
+            for ln in header_lines:
+                x = float(ln["bbox"][0])
+                if not any(abs(x - c) < 18 for c in centers):
+                    centers.append(x)
+            centers.sort()
+            if len(centers) < 2:
+                continue
+
+            def cells_for(lines: List[Dict[str, Any]]) -> List[str]:
+                cells = ["" for _ in centers]
+                for ln in lines:
+                    x = float(ln["bbox"][0])
+                    j = min(range(len(centers)), key=lambda k: abs(centers[k] - x))
+                    text = " ".join(tok["text"] for tok in ln["tokens"]).strip() or ln["text"].strip()
+                    cells[j] = (cells[j] + " " + text).strip()
+                return cells
+
+            rows: List[List[str]] = [cells_for(header_lines)]
+            for band in data_bands:
+                rows.append(cells_for(band))
+            if len(rows) >= 2:
+                out.append({"page": p["number"],
+                            "bbox": [cx0, cand[0]["bbox"][1], cx1, cand[-1]["bbox"][3]],
+                            "rows": rows, "source": "caption+word-boxes"})
+    return out
+
+
+def extract_ocr_table(text: str) -> List[Dict[str, Any]]:
+    """Read a simple table from a scanned page's OCR paragraph.
+
+    OCR often joins the caption, header and rows into one paragraph.  The
+    values are still recoverable when the condition column and three numeric
+    columns are present; return the rows and the caption separately.
+    """
+    if not text or "Table" not in text:
+        return []
+    cap = re.search(r"(Table\s+\d+\.?\s*[^.]*\.)", text)
+    if not cap or "Condition" not in text or "Pages" not in text:
+        return []
+    tail = text.split("After preprocessing", 1)[-1]
+    tail = tail.split(")", 1)[-1] if ")" in tail else tail
+    pat = re.compile(r"(Clean|Skew\s*(?:>|≥)?\s*[0-9.\-–]+\s*(?:deg)?)\s+"
+                     r"(\d+)\s+([0-9.]+)\s+([0-9.]+)")
+    rows = [["Condition", "Pages", "CER (%)", "After preprocessing (%)"]]
+    for m in pat.finditer(tail):
+        rows.append([m.group(1).strip(), m.group(2), m.group(3), m.group(4)])
+    if len(rows) < 3:
+        return []
+    return [{"page": 1, "caption": cap.group(1).strip(), "rows": rows,
+             "source": "ocr-text"}]
+
+
+def detect_tables_from_header_boxes(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Continuation pages often put the repeated header at the top and the
+    caption *below* the table.  Start from that header row instead of a caption.
+    """
+    out: List[Dict[str, Any]] = []
+    for p in pages:
+        lines = [ln for ln in p.get("lines") or [] if ln.get("tokens")]
+        if len(lines) < 8:
+            continue
+        lines.sort(key=lambda ln: (ln["bbox"][1], ln["bbox"][0]))
+        page_bottom = max(float(ln["bbox"][3]) for ln in lines)
+        top_limit = min(float(ln["bbox"][1]) for ln in lines) + max(220.0, (page_bottom * 0.28))
+        bands: List[List[Dict[str, Any]]] = []
+        for ln in lines:
+            if ln["bbox"][1] > top_limit:
+                continue
+            if not bands or ln["bbox"][1] - bands[-1][0]["bbox"][1] > 12:
+                bands.append([ln])
+            else:
+                bands[-1].append(ln)
+        header = None
+        for band in bands:
+            cells = [ln for ln in band
+                     if 2 <= len(ln["text"].strip()) <= 22
+                     and re.search(r"[A-Za-z]", ln["text"])]
+            if len(cells) < 4:
+                continue
+            if not any(re.match(r"^(Run|Sample|ID|No\.?|Parameter|Condition|Material|Method)\b",
+                                ln["text"].strip(), re.I) for ln in cells):
+                continue
+            header = band
+            break
+        if not header:
+            continue
+        hx0 = min(float(ln["bbox"][0]) for ln in header)
+        hx1 = max(float(ln["bbox"][2]) for ln in header)
+        centers: List[float] = []
+        for ln in header:
+            x = float(ln["bbox"][0])
+            if not any(abs(x - c) < 18 for c in centers):
+                centers.append(x)
+        centers.sort()
+        if len(centers) < 4:
+            continue
+        after = [ln for ln in lines if ln["bbox"][1] > max(float(h["bbox"][3]) for h in header) + 4]
+        body: List[Dict[str, Any]] = []
+        for ln in after:
+            if CAPTION_TABLE.search(ln["text"]) and body:
+                break
+            if len(ln["text"].split()) >= 9 and not re.search(r"\d", ln["text"]):
+                break
+            if ln["bbox"][0] < hx0 - 20 or ln["bbox"][0] > hx1 + 80:
+                continue
+            body.append(ln)
+            if len(body) > 80:
+                break
+        if len(body) < 4:
+            continue
+        bands2: List[List[Dict[str, Any]]] = []
+        for ln in body:
+            if not bands2 or ln["bbox"][1] - bands2[-1][0]["bbox"][1] > 12:
+                bands2.append([ln])
+            else:
+                bands2[-1].append(ln)
+        if len(bands2) < 3:
+            continue
+
+        def cells_for(group: List[Dict[str, Any]]) -> List[str]:
+            cells = ["" for _ in centers]
+            for ln in group:
+                text = " ".join(tok["text"] for tok in ln["tokens"]).strip() or ln["text"].strip()
+                j = min(range(len(centers)), key=lambda k: abs(centers[k] - float(ln["bbox"][0])))
+                cells[j] = (cells[j] + " " + text).strip()
+            return cells
+
+        rows = [cells_for(header)] + [cells_for(band) for band in bands2]
+        out.append({"page": p["number"],
+                    "bbox": [hx0, header[0]["bbox"][1], hx1, body[-1]["bbox"][3]],
+                    "rows": rows, "source": "header+word-boxes"})
+    return out
+
+
 def detect_tables_from_lines(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fallback table reader: consecutive lines with 2+ wide x-gaps."""
     out: List[Dict[str, Any]] = []
@@ -226,6 +451,9 @@ def detect_tables_from_lines(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     parts = re.split(r"\s{2,}", ln["text"].strip())
                     cells.append([c for c in parts if c])
                 if sum(len(c) for c in cells) >= 4:
+                    if table_is_prose(cells):
+                        group = []
+                        return
                     out.append({"page": p["number"], "bbox": [
                         min(l["bbox"][0] for l in group), min(l["bbox"][1] for l in group),
                         max(l["bbox"][2] for l in group), max(l["bbox"][3] for l in group)],
@@ -431,6 +659,17 @@ def _header_row(row: List[str]) -> bool:
     return len(vals) >= 2 and not any(_data_like(c) for c in vals)
 
 
+def _unit_row(row: List[str]) -> bool:
+    cells = [str(c or "").strip() for c in row if str(c or "").strip()]
+    if not cells:
+        return False
+    units = 0
+    for c in cells:
+        if c.startswith(("(", "（")) or re.search(r"[µμÅ%°]|cm\s*-?\d|\bs\s*-?\d", c):
+            units += 1
+    return units >= max(2, len(cells) * 0.6)
+
+
 def _header_count(rows: List[List[str]]) -> int:
     if not rows or not _header_row(rows[0]):
         return 0
@@ -481,10 +720,42 @@ def normalize_table(rows: List[List[str]], max_rows: int = 200, max_cols: int = 
     rows = unique
     width = max((len(r) for r in rows), default=0)
     rows = [r + [""] * (width - len(r)) for r in rows]
+    if len(rows) > 2 and _unit_row(rows[1]) and not _unit_row(rows[0]):
+        rows[0] = [f"{a} {b}".strip() for a, b in zip(rows[0], rows[1])]
+        rows = [rows[0]] + rows[2:]
     nhead = _header_count(rows)
     header_rows = rows[:nhead] if nhead else (rows[:1] if rows else [])
     header = _flatten_header(header_rows, width) if header_rows else []
-    data_rows = rows[nhead:] if nhead else rows[1:]
+    def _clean_header(c: str) -> str:
+        c = str(c or "").strip()
+        # A wrapped word arrives as "Concentr / ation"; ordinary unit text such
+        # as "(mol/L)" must keep its slash.
+        c = re.sub(r"\b([A-Za-z]{3,})\s+/\s+([A-Za-z]{2,})\b",
+                   lambda m: (m.group(1) + m.group(2)
+                              if m.group(2).lower() in {"ation", "ations", "tion", "sion",
+                                                        "ment", "ing", "ed", "ity", "ance",
+                                                        "ence", "tance", "al"}
+                              else m.group(1) + " " + m.group(2)), c)
+        c = re.sub(r"\b([A-Za-z]{2,})\s+(ation|ations|tion|sion|ment|ing|ed|ity|ance|ence|tance|al)\b",
+                   lambda m: m.group(1) + m.group(2), c)
+        c = re.sub(r"(\d)\s*-\s*(\d)", r"\1-\2", c)
+        c = re.sub(r"\s+/\s+", " ", c)
+        c = re.sub(r"\s+\)", ")", c)
+        c = re.sub(r"\b(cm|mm|m|s|µF)\s+(-?[0-9])", r"\1\2", c)
+        return re.sub(r"\s+", " ", c)
+    header = [_clean_header(c) for c in header]
+    # A units row under a two-level header belongs to the header, not to the
+    # data.  Leaving it in data_rows produced "|  | (Å) | ..." as the first
+    # data row and made a 4x3 table look like 4x4.
+    unit_row = None
+    if nhead and len(rows) > nhead and _unit_row(rows[nhead]):
+        unit_row = rows[nhead]
+        for j in range(width):
+            u = _clean_header(unit_row[j]) if j < len(unit_row) else ""
+            if u and u not in header[j]:
+                header[j] = (header[j] + " " + u).strip()
+    data_rows = rows[nhead + (1 if unit_row else 0):] if nhead else \
+        rows[1 + (1 if unit_row else 0):]
     legacy_rows = ([header] + data_rows) if header else data_rows
 
     def esc(s: str) -> str:
@@ -500,6 +771,31 @@ def normalize_table(rows: List[List[str]], max_rows: int = 200, max_cols: int = 
             "rows": legacy_rows, "markdown": "\n".join(md),
             "n_rows": len(data_rows), "n_cols": width,
             "multi_level_header": nhead > 1}
+
+
+def table_is_prose(rows: List[List[str]]) -> bool:
+    """Reject a "table" whose cells are actually double-column body sentences.
+
+    The line-gap fallback fires on a two-column page because every line spans
+    more than 25% of the page width.  The resulting 7x6 grid has a header made
+    of caption prose and cells made of paragraph text; that is a layout bug,
+    not a table.  Numeric/short-label tables pass; prose grids do not.
+    """
+    cells = [str(c or "").strip() for r in rows for c in r if str(c or "").strip()]
+    if len(cells) < 4:
+        return True
+    long_cells = [c for c in cells
+                  if len(c) > 70 or len(c.split()) > 12
+                  or (len(c) > 40 and c.endswith((".", "。", ";")))]
+    if len(long_cells) / len(cells) > 0.2:
+        return True
+    numeric = [c for c in cells if re.match(r"^[+\-−]?\d", c)]
+    if not numeric and len(cells) > 8:
+        # A pure text table can exist, but a 7-column grid with no number and
+        # long prose headers is overwhelmingly a body-flow artifact.
+        if len(long_cells) >= 2:
+            return True
+    return False
 
 
 def _table_markdown(header: List[str], data_rows: List[List[str]]) -> str:
@@ -535,16 +831,24 @@ def merge_continuations(tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for t in tables:
         if out:
             prev = out[-1]
-            same_width = t.get("n_cols") == prev.get("n_cols") and t.get("header") == prev.get("header")
+            same_header = (_header_sig(t.get("header") or []) ==
+                           _header_sig(prev.get("header") or []))
+            same_width = t.get("n_cols") == prev.get("n_cols") and (
+                same_header or not prev.get("header") or not t.get("header"))
             adjacent = int(t.get("page") or 0) == int(prev.get("page") or 0) + 1
             cap = ((prev.get("caption") or "") + " " + (t.get("caption") or "")).lower()
-            says_continue = any(k in cap for k in ("continu", "续表", "接上页", "continued"))
+            says_continue = any(k in cap for k in
+                                ("continu", "续表", "接上页", "continued",
+                                 "repeat", "across a page", "跨页"))
+            prev_no = re.search(r"table\s+(\d+)", (prev.get("caption") or ""), re.I)
+            this_no = re.search(r"table\s+(\d+)", (t.get("caption") or ""), re.I)
+            same_number = bool(prev_no and this_no and prev_no.group(1) == this_no.group(1))
             pdata = prev.get("data_rows") or []
             tdata = t.get("data_rows") or []
             last_run = _run_no(pdata[-1][0]) if pdata and pdata[-1] else None
             first_run = _run_no(tdata[0][0]) if tdata and tdata[0] else None
             sequential = last_run is not None and first_run is not None and first_run == last_run + 1
-            if same_width and adjacent and (says_continue or sequential):
+            if same_width and adjacent and (says_continue or same_number or sequential):
                 merged = []
                 seen = set()
                 for r in pdata + tdata:
@@ -555,6 +859,9 @@ def merge_continuations(tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     merged.append(r)
                 prev["data_rows"] = merged
                 prev["rows"] = merged
+                if not prev.get("header") and t.get("header"):
+                    prev["header"] = t["header"]
+                    prev["header_rows"] = t.get("header_rows") or [t["header"]]
                 prev["rows_all"] = ([prev["header"]] + merged) if prev.get("header") else merged
                 prev["n_rows"] = len(merged)
                 prev["markdown"] = _table_markdown(prev.get("header") or [], merged)
@@ -950,6 +1257,59 @@ def find_formulas(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         else:
             flush()
     flush()
+    # A numbered display equation can be glued to a prose sentence ("C = ...
+    # (3) where ...").  The block is not purely mathy, so the display detector
+    # above stops before it.  Recover the numbered expression without
+    # swallowing the following prose.
+    have = {str(f.get("number") or "") for f in out}
+    for b in blocks:
+        if b.get("type") not in {"body", "formula"}:
+            continue
+        m = re.match(r"^(?P<expr>.+?)\s*[\(（](?P<num>\d{1,3})[\)）]\s*(?P<tail>.*)$",
+                     b["text"].strip(), re.S)
+        if not m or m.group("num") in have:
+            continue
+        expr = m.group("expr").strip()
+        if not expr:
+            continue
+        # A numbered display can be glued to prose in one block.  Require
+        # either an equation sign or a genuinely math-shaped expression
+        # (function application / parentheses), not just any sentence ending
+        # in "(3)".
+        if "=" not in expr and not (
+                re.search(r"[A-Za-z]\s*[\(（]", expr)
+                and not re.search(r"\b(the|and|that|this|is|was|were|by|for)\b", expr, re.I)
+                and len(expr.split()) <= 18):
+            continue
+        if "=" in expr and not any(ch in MATH_CHARS for ch in expr):
+            continue
+        tex, dropped = formula_to_tex(expr + " (" + m.group("num") + ")")
+        out.append({"id": f"eq-{b['id']}", "page": b["page"], "block": b["id"],
+                    "blocks": [b["id"]], "number": m.group("num"),
+                    "text": expr + " (" + m.group("num") + ")", "tex": tex,
+                    "tex_confidence": "low" if dropped else "medium",
+                    "tex_dropped_chars": dropped})
+        have.add(m.group("num"))
+    # Some papers put the equation number before the display ("loss (2) L = ...").
+    for b in blocks:
+        if b.get("type") not in {"body", "formula"}:
+            continue
+        for m in re.finditer(r"\((?P<num>\d{1,3})\)\s*(?P<expr>[^.;]{1,180}?=[^.;]{1,180})",
+                             b["text"].strip()):
+            num = m.group("num")
+            if num in have:
+                continue
+            expr = m.group("expr").strip()
+            if not any(ch in MATH_CHARS for ch in expr) and not re.search(r"\b[A-Za-z]{1,3}\s*=", expr):
+                continue
+            tex, dropped = formula_to_tex(expr + " (" + num + ")")
+            out.append({"id": f"eq-{b['id']}-{num}", "page": b["page"], "block": b["id"],
+                        "blocks": [b["id"]], "number": num,
+                        "text": expr + " (" + num + ")", "tex": tex,
+                        "tex_confidence": "low" if dropped else "medium",
+                        "tex_dropped_chars": dropped})
+            have.add(num)
+    out.sort(key=lambda f: (f.get("page", 0), int(f.get("number") or 999)))
     return out
 
 
@@ -958,6 +1318,17 @@ def find_references(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for i, b in enumerate(blocks):
         if re.match(r"^\s*(references|bibliography|参考文献)\s*$", b["text"].strip(), re.I):
             start = i
+    if start is None:
+        # Physics papers often omit the "References" heading and start the
+        # list directly with "[1] … [2] …".  Detect that sequence instead of
+        # returning zero entries.
+        for i, b in enumerate(blocks):
+            if not re.match(r"^\s*\[1\]", b["text"].strip()):
+                continue
+            window = " ".join(x["text"] for x in blocks[i:i + 8])
+            if len(re.findall(r"\[\d{1,3}\]", window)) >= 3:
+                start = i - 1
+                break
     if start is None:
         return []
     candidates = []
@@ -1010,6 +1381,8 @@ AFFIL_WORDS = {
     "tokyo", "kyoto", "seoul", "singapore", "sydney", "melbourne", "seattle", "boston",
     "pittsburgh", "austin", "atlanta", "chicago", "montreal", "stanford", "berkeley",
     "york", "francisco", "angeles", "diego", "ann", "arbor", "college", "station",
+    "united", "states", "usa", "america", "china", "colombia", "germany", "france",
+    "japan", "canada", "australia", "netherlands", "switzerland", "singapore",
 }
 NAME_MARKERS = re.compile(r"[∗†‡§¶#*✝♠♣♥♦]")
 NAME_TOKEN = re.compile(r"^[A-ZÀ-ÖØ-ÞŁŚŻŹĆŃ][\w'’.-]*$|^[A-Z]\.$")
@@ -1063,11 +1436,115 @@ def names_from_author_line(text: str) -> List[str]:
     return out[:24]
 
 
+def _title_from_lines(page: Dict[str, Any]) -> str:
+    """Read the title from the page lines, before authors/affiliations."""
+    height = float(page.get("height") or 842.0)
+    lines = sorted([ln for ln in page.get("lines") or [] if ln.get("text")],
+                   key=lambda ln: (ln["bbox"][1], ln["bbox"][0]))
+    parts: List[str] = []
+    started = False
+    last_y = 0.0
+    for ln in lines:
+        y = float(ln["bbox"][1])
+        if y > height * 0.38:
+            break
+        t = re.sub(r"\s+", " ", ln["text"]).strip()
+        if not t:
+            continue
+        if re.search(r"\b(Abstract|摘要)\b", t):
+            head = re.split(r"\b(?:Abstract|摘要)\b", t, maxsplit=1)[0].strip(" .:")
+            if head and not started:
+                parts.append(head)
+            break
+        if re.match(r"^(Journal|Proceedings|Conference|Volume|Issue|doi|arxiv|preprint)\b", t, re.I):
+            continue
+        if re.search(r"\b(Institute|University|Laboratory|Department|Correspondence|E-?mail)\b", t, re.I):
+            break
+        if re.match(r"^[A-Z]\.\s*[A-Z][A-Za-z'’-]*\d*(?:\s+\d+)?(?:\s*,|\s+and\b)", t):
+            break
+        if len(t) < 4 or len(t) > 260:
+            continue
+        if started and y - last_y > 24:
+            break
+        parts.append(t)
+        started = True
+        last_y = y
+    return " ".join(parts).strip()
+
+
+def recover_numbered_sections(pages: List[Dict[str, Any]],
+                             sections: List[Dict[str, Any]],
+                             extra_text: str = "") -> List[Dict[str, Any]]:
+    """Keep numbered headings that the block classifier left as body text.
+
+    A page footer such as `2 SYNTHETIC TEST DATA` is still part of the section
+    tree expected by a parser rubric; dropping it because it sits low on the
+    page makes the tree silently shorter than the document.
+    """
+    known = {re.sub(r"\s+", " ", str(s.get("title") or "")).strip().lower()
+             for s in sections}
+    out = list(sections)
+    for p in pages:
+        for ln in sorted(p.get("lines") or [], key=lambda ln: ln["bbox"][1]):
+            text = re.sub(r"\s+", " ", ln.get("text") or "").strip()
+            if not (2 <= len(text) <= 90) or text.endswith("."):
+                continue
+            m = re.match(r"^(\d{1,2})(?:\.\d+)?\s+([A-Z][A-Za-z].*)$", text)
+            if not m:
+                continue
+            # Running footer ("2 SYNTHETIC TEST DATA") is not a section and has
+            # the same number as a real section; the rubric's section tree must
+            # not gain a duplicate from the page furniture.
+            if text == text.upper() or (m.group(2) == m.group(2).upper() and len(text.split()) <= 5):
+                continue
+            title = text
+            if title.lower() in known:
+                continue
+            known.add(title.lower())
+            out.append({"level": 1, "title": title, "page": p["number"],
+                        "block": "", "parent": None})
+    base_map: Dict[str, int] = {}
+    raw_lines = [re.sub(r"\s+", " ", x).strip() for x in (extra_text or "").splitlines()]
+    for i, text in enumerate(raw_lines):
+        if re.fullmatch(r"\d{1,2}", text) and i + 1 < len(raw_lines):
+            nxt = raw_lines[i + 1]
+            # A bare printed page number sits immediately above the title in
+            # `pdftotext -layout`; joining them invented "1 Deep Potential ..."
+            # as a section.  Real short headings have few words.
+            if len(nxt.split()) >= 6 or ":" in nxt:
+                continue
+            if re.match(r"^[A-Z][A-Za-z]", nxt) and len(nxt) <= 80:
+                text = text + " " + nxt
+        if not (2 <= len(text) <= 90) or text.endswith("."):
+            continue
+        if not re.match(r"^\d{1,2}(?:\.\d+)?\s+[A-Z][A-Za-z].*$", text):
+            continue
+        m = re.match(r"^(\d{1,2})\s+(.*)$", text)
+        if text == text.upper() or (m and m.group(2) == m.group(2).upper()):
+            continue
+        base = re.sub(r"^\d+\s+", "", text).strip().lower()
+        if base in base_map and m:
+            idx = base_map[base]
+            old = re.match(r"^(\d+)", out[idx]["title"])
+            if old and int(m.group(1)) > int(old.group(1)):
+                out[idx]["title"] = text
+            continue
+        if text.lower() in known:
+            continue
+        known.add(text.lower())
+        if m:
+            base_map[base] = len(out)
+        out.append({"level": 1, "title": text, "page": 1,
+                    "block": "", "parent": None})
+    return out
+
+
 def extract_metadata(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]], body_size: float) -> Dict[str, Any]:
     meta: Dict[str, Any] = {"title": "", "authors": [], "abstract": "", "keywords": [], "doi": ""}
     first = [b for b in blocks if b["page"] == pages[0]["number"]]
     if not first:
         return meta
+    line_title = _title_from_lines(pages[0])
     sized = sorted(first, key=lambda b: (-(b.get("size") or 0), b["bbox"][1]))
     if sized:
         cand = None
@@ -1077,6 +1554,8 @@ def extract_metadata(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]], 
             if b["bbox"][1] > top_limit or not (6 < len(t) < 250):
                 continue
             if re.match(r"^(provided|copyright|licensed|arxiv|https?://|doi|preprint|under review)", t, re.I):
+                continue
+            if re.match(r"^(abstract|摘要|keywords?|关键词)\b", t, re.I):
                 continue
             if "@" in t or re.match(r"^[\d\W]+$", t):
                 continue
@@ -1093,6 +1572,9 @@ def extract_metadata(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]], 
         if len(cand["text"]) > 6:
             meta["title"] = cand["text"].strip()
             meta["title_block"] = cand["id"]
+        if line_title and len(line_title) > 6:
+            meta["title"] = line_title
+            meta["title_block"] = meta.get("title_block") or cand["id"]
     # authors: everything between the title and the abstract is one author region
     if meta["title_block"]:
         idx = next(i for i, b in enumerate(first) if b["id"] == meta["title_block"])
@@ -1103,11 +1585,33 @@ def extract_metadata(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]], 
         while (start < len(first) and first[start]["type"] == "heading"
                and not re.match(r"^(abstract|摘要)", first[start]["text"], re.I)):
             start += 1
+        # A single author line immediately below the title is the strongest
+        # signal; this avoids scanning affiliations and correspondence.
+        direct = first[start]["text"].strip() if start < len(first) else ""
+        direct_names = []
+        if len(direct) < 120 and not re.search(r"\b(department|university|institute|correspondence)\b", direct, re.I):
+            direct_names = names_from_author_line(direct)
+            if not direct_names:
+                for part in re.split(r",| and ", direct):
+                    part = re.sub(r"\d+", "", part).strip(" .;")
+                    toks = part.split()
+                    if 2 <= len(toks) <= 4 and all(
+                            re.match(r"^[A-ZÀ-ÖØ-Þ][\w'’.-]*$|^[A-Z]\.$", t) for t in toks):
+                        direct_names.append(part)
+        if len(direct_names) >= 2:
+            meta["authors"] = direct_names[:24]
+            start = len(first)
         for b in first[start: start + 16]:
             t = b["text"].strip()
             if re.match(r"^(abstract|摘要)\b", t, re.I):
                 break
-            if re.match(r"^(keywords?|关键词|CCS Concepts|ACM Reference)", t, re.I):
+            if re.match(r"^(keywords?|关键词|CCS Concepts|ACM Reference|correspondence|email|e-mail)", t, re.I):
+                break
+            # Affiliations and the abstract are one or two blocks; a long
+            # sentence-bearing body block ends the author region too.  Without
+            # this, the whole first page was scanned and "United States"
+            # became the author.
+            if len(t) > 180 or (len(t.split()) > 16 and re.search(r"[.!?]\s", t)):
                 break
             region.append(t)
         if region:

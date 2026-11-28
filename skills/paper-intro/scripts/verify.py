@@ -43,8 +43,9 @@ def check_translate(result: Dict[str, Any], doc: Dict[str, Any],
     # a declared contract does not hide the segments from the checker.
     payload = payload or {}
     body = result.get("output_contract") or {}
+    main = result.get("main_result") or {}
     segs = (result.get("segments") or body.get("segments")
-            or payload.get("segments") or [])
+            or main.get("segments") or payload.get("segments") or [])
     if isinstance(segs, dict):
         # the contract wraps declared arrays as {"items": [...], "count": n}
         segs = segs.get("items") or []
@@ -230,7 +231,16 @@ def audit_contract(result: Dict[str, Any], doc: Dict[str, Any]) -> Dict[str, Any
     declared: List[str] = []
     node = case.get("output_contract")
     if isinstance(node, dict):
-        declared = list(node)
+        # v3/v4 contract: the field list is nested under result_json, while
+        # result_json / required_files / rules are instructions, not answers.
+        rj = node.get("result_json")
+        if isinstance(rj, dict) and isinstance(rj.get("required_fields"), list):
+            declared = [str(x) for x in rj["required_fields"]]
+        elif isinstance(node.get("required_fields"), list):
+            declared = [str(x) for x in node["required_fields"]]
+        else:
+            declared = [k for k in node
+                        if k not in {"result_json", "required_files", "rules"}]
     elif isinstance(node, list):
         declared = [str(x) if isinstance(x, str) else str(x.get("name"))
                     for x in node]
@@ -408,14 +418,15 @@ def audit_independent(doc: Dict[str, Any], pdf_path: str = "") -> Dict[str, Any]
             pass
 
 
-def check_generic(result: Dict[str, Any], doc: Dict[str, Any]) -> List[str]:
+def check_generic(result: Dict[str, Any], doc: Dict[str, Any],
+                  out_dir: str = "") -> List[str]:
     problems: List[str] = []
     if not result.get("case_id"):
         problems.append("case_id is empty")
-    if result.get("status") not in {"complete", "partial", "unable", "refused"}:
-        problems.append("status must be complete|partial|unable|refused")
-    if result.get("status") == "complete" and not result.get("evidence"):
-        problems.append("status=complete but evidence is empty")
+    if result.get("status") not in {"success", "complete", "partial", "unable", "refused"}:
+        problems.append("status must be success|partial|unable")
+    if result.get("status") in {"success", "complete"} and not result.get("evidence"):
+        problems.append("status=success but evidence is empty")
     contract = result.get("output_contract") or {}
     # Only `null` is a hole. An empty list means "looked, there is none", which
     # is a real answer -- flagging it would push an agent to invent content.
@@ -431,9 +442,14 @@ def check_generic(result: Dict[str, Any], doc: Dict[str, Any]) -> List[str]:
     d = (doc or {}).get("document") or {}
     ids = {b["id"] for b in d.get("blocks", [])}
     for i, item in enumerate(result.get("evidence") or []):
-        b = item.get("block")
-        if b and b.split("+")[0] not in ids:
-            problems.append(f"evidence[{i}] unknown block {b}")
+        b = item.get("block") or item.get("file") or ""
+        if b and all(c not in ids for c in str(b).split("+")):
+            # A writing task anchors its evidence in the file it produced, and
+            # that file lives next to result.json.  A path that exists is a real
+            # anchor; a path that does not is still a broken one.
+            as_file = os.path.join(out_dir, str(b)) if out_dir else ""
+            if not (as_file and os.path.isfile(as_file)):
+                problems.append(f"evidence[{i}] unknown block {b}")
         page = item.get("page")
         if page and d.get("source", {}).get("pages") and \
                 not 1 <= int(page) <= int(d["source"]["pages"]):
@@ -458,7 +474,7 @@ def main() -> int:
     payload = load(payp) if os.path.exists(payp) else {}
     d = (doc or {}).get("document") or {}
     problems = (check_translate(res, doc, payload) if args.kind == "translate"
-                else check_generic(res, doc))
+                else check_generic(res, doc, args.out))
     checks = {
         "geometry": audit_geometry(doc),
         "decisions": audit_decisions(doc),

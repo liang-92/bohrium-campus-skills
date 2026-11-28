@@ -69,6 +69,9 @@ cd "$SKILL_DIR" || exit 1
 # 0.5) 环境探测：装了哪些引擎/OCR。缺了会降级，脚本不假设任何东西存在
 python3 scripts/run.py --probe
 
+# 0.6) LaTeX：默认检测到 TeX 引擎就编译；只做静态检查时显式关闭
+#      PK_TEX_COMPILE=0 python3 scripts/run.py --input /input --out /app/output
+
 # 1) 一次跑完解析 + 组包
 python3 scripts/run.py --input /input --out /app/output
 
@@ -341,12 +344,26 @@ def write_resources(dest: str) -> None:
 
 def build_one(skill: dict, root: str) -> dict:
     out = os.path.join(root, "skills", skill["slug"])
-    if os.path.exists(out):
-        shutil.rmtree(out)
     os.makedirs(os.path.join(out, "scripts"), exist_ok=True)
 
-    shutil.copytree(os.path.join(root, "core", "paperkit"), os.path.join(out, "scripts", "pk"),
+    # Overwrite in place instead of `rmtree` + `copytree`.  The desktop's
+    # safe-delete hook refuses to trash a package directory ("Some operations
+    # were aborted"), and the half-finished build left new `compose_all.py`
+    # next to a month-old `pk/`.  Copying over the top is idempotent and leaves
+    # nothing behind that the purge below does not already sweep.
+    src_pk = os.path.join(root, "core", "paperkit")
+    dst_pk = os.path.join(out, "scripts", "pk")
+    shutil.copytree(src_pk, dst_pk, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    for dirpath, _dirs, names in os.walk(dst_pk):
+        rel = os.path.relpath(dirpath, dst_pk)
+        for name in names:
+            src = os.path.join(src_pk, rel, name)
+            if not os.path.exists(src):
+                try:
+                    os.remove(os.path.join(dirpath, name))
+                except OSError:
+                    pass
     shutil.copy2(os.path.join(root, "core", "run.py"), os.path.join(out, "scripts", "run.py"))
     shutil.copy2(os.path.join(root, "core", "compose_all.py"), os.path.join(out, "scripts", "compose_all.py"))
     shutil.copy2(os.path.join(root, "core", "verify.py"), os.path.join(out, "scripts", "verify.py"))
@@ -363,27 +380,138 @@ def build_one(skill: dict, root: str) -> dict:
     with open(os.path.join(out, "scripts", "profile.txt"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(skill["mode"] + "\n")
 
-    files, total, biggest = 0, 0, ("", 0)
-    for dirpath, _, filenames in os.walk(out):
+    # A previous run of the packaged scripts leaves `__pycache__` behind, and
+    # those .pyc files are byte-code for *this* interpreter: useless on the
+    # evaluator's Linux box, but they still count against the 50-file / 2MB
+    # budget.  Ship sources only.
+    removed = purge_pycache(out)
+    files, total, biggest, stale = bag(out)
+    return {"slug": skill["slug"], "files": files, "bytes": total, "biggest": biggest,
+            "pycache_removed": removed, "pycache_stale": stale}
+
+
+def purge_pycache(root: str) -> int:
+    removed = 0
+    for dirpath, dirnames, _ in os.walk(root):
+        for d in list(dirnames):
+            if d == "__pycache__":
+                for dp, _, fns in os.walk(os.path.join(dirpath, d)):
+                    removed += len(fns)
+                shutil.rmtree(os.path.join(dirpath, d), ignore_errors=True)
+                dirnames.remove(d)
+    return removed
+
+
+def bag(root: str) -> tuple:
+    """Count what would actually be submitted: sources, not byte-code."""
+    files, total, biggest, pyc = 0, 0, ("", 0), 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
         for fn in filenames:
+            if fn.endswith(".pyc"):
+                pyc += 1
+                continue
             p = os.path.join(dirpath, fn)
             size = os.path.getsize(p)
             files += 1
             total += size
             if size > biggest[1]:
-                biggest = (os.path.relpath(p, out), size)
-    return {"slug": skill["slug"], "files": files, "bytes": total, "biggest": biggest}
+                biggest = (os.path.relpath(p, root), size)
+    return files, total, biggest, pyc
 
 
 def check_limits(rows) -> list:
     problems = []
     for r in rows:
+        if r.get("pycache_stale"):
+            problems.append(f"{r['slug']}: {r['pycache_stale']} stale .pyc file(s) in the package "
+                            f"(byte-code for this Python, dead weight on the evaluator)")
         if r["files"] > 50:
             problems.append(f"{r['slug']}: {r['files']} files > 50")
         if r["biggest"][1] > 500 * 1024:
             problems.append(f"{r['slug']}: {r['biggest'][0]} {r['biggest'][1]}B > 500KB")
         if r["bytes"] > 2 * 1024 * 1024:
             problems.append(f"{r['slug']}: total {r['bytes']}B > 2MB")
+    return problems
+
+
+def front_matter(path: str) -> dict:
+    """Parse the YAML block between the `---` fences of a SKILL.md.
+
+    Uses PyYAML when it is installed and a small strict fallback otherwise, so
+    the build never silently skips the check on a machine without PyYAML.  The
+    fallback understands exactly what this generator emits: top-level `key:`
+    lines, `>-` folded scalars and single-line values.  Anything else is
+    reported as unparsed rather than guessed at.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = fh.read()
+    if not raw.startswith("---"):
+        return {"_error": "does not start with a --- fence"}
+    end = raw.find("\n---", 3)
+    if end < 0:
+        return {"_error": "no closing --- fence"}
+    block = raw[3:end].strip("\n")
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(block)
+        return data if isinstance(data, dict) else {"_error": "front matter is not a mapping"}
+    except ImportError:
+        pass
+    except Exception as exc:  # a real YAML error: report it, do not fall back
+        return {"_error": f"yaml: {type(exc).__name__}: {exc}"}
+    out: dict = {}
+
+    def flush(key, buf):
+        if key:
+            out[key] = " ".join(buf).strip()
+
+    key, buf = None, []
+    for line in block.splitlines():
+        if not line.strip():
+            continue
+        if line[:1] in (" ", "\t") and key:      # folded continuation of `>-`
+            buf.append(line.strip())
+            continue
+        flush(key, buf)
+        key, buf = None, []
+        if ":" not in line:
+            return {"_error": f"not a `key: value` line: {line[:40]!r}"}
+        k, v = line.split(":", 1)
+        k, v = k.strip(), v.strip()
+        if v in (">-", ">", "|", "|-"):
+            key = k
+            continue
+        out[k] = v.strip('"').strip("'")
+    flush(key, buf)
+    return out
+
+
+def check_meta(slugs) -> list:
+    """Every SKILL.md must parse, and its name must be the directory name.
+
+    The evaluator loads a Skill by reading this block, so a metadata problem is
+    not a cosmetic one: an unparseable `---` block means the Skill never loads
+    and every point behind it is lost before the code runs.
+    """
+    problems = []
+    for slug in slugs:
+        path = os.path.join(ROOT, "skills", slug, "SKILL.md")
+        if not os.path.exists(path):
+            problems.append(f"{slug}: no SKILL.md")
+            continue
+        meta = front_matter(path)
+        if "_error" in meta:
+            problems.append(f"{slug}: front matter unreadable ({meta['_error']})")
+            continue
+        for field in ("name", "description", "version", "license"):
+            if not str(meta.get(field) or "").strip():
+                problems.append(f"{slug}: front matter has no {field}")
+        if str(meta.get("name") or "").strip() != slug:
+            problems.append(f"{slug}: name={meta.get('name')!r} does not match the directory")
+        desc = str(meta.get("description") or "")
+        if len(desc) < 40:
+            problems.append(f"{slug}: description is too short to trigger on ({len(desc)} chars)")
     return problems
 
 
@@ -397,17 +525,11 @@ def main() -> int:
             rows.append(build_one(s, ROOT))
         else:
             out = os.path.join(ROOT, "skills", s["slug"])
-            files, total, biggest = 0, 0, ("", 0)
-            for dirpath, _, filenames in os.walk(out):
-                for fn in filenames:
-                    p = os.path.join(dirpath, fn)
-                    size = os.path.getsize(p)
-                    files += 1
-                    total += size
-                    if size > biggest[1]:
-                        biggest = (os.path.relpath(p, out), size)
-            rows.append({"slug": s["slug"], "files": files, "bytes": total, "biggest": biggest})
+            files, total, biggest, pyc = bag(out)
+            rows.append({"slug": s["slug"], "files": files, "bytes": total,
+                         "biggest": biggest, "pycache_stale": pyc})
     problems = check_limits(rows)
+    meta_problems = check_meta([s["slug"] for s in SKILLS])
     for r in rows:
         print(f"{r['slug']:16s} files={r['files']:3d} total={r['bytes']/1024:7.1f}KB "
               f"biggest={r['biggest'][0]} {r['biggest'][1]/1024:.0f}KB")
@@ -415,7 +537,13 @@ def main() -> int:
         print("\nLIMIT PROBLEMS:")
         for p in problems:
             print(" -", p)
-    return 1 if problems else 0
+    if meta_problems:
+        print("\nMETADATA PROBLEMS:")
+        for p in meta_problems:
+            print(" -", p)
+    print(f"\n{len(rows)} packages, {len(problems)} size problem(s), "
+          f"{len(meta_problems)} metadata problem(s)")
+    return 1 if (problems or meta_problems) else 0
 
 
 if __name__ == "__main__":

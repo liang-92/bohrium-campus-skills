@@ -41,7 +41,7 @@ T: Dict[str, str] = {
     _k("A dendrite penetrates the pellet at 0.9 mA cm-2 when the relative density falls below 93%."):
         "当相对密度降至 93% 以下时，枝晶在 0.9 mA cm-2 下穿透压片。",
     _k("These results suggest that the critical current density is controlled by the grain-boundary network rather than by the bulk conductivity alone."):
-        "这些结果表明，临界电流密度受晶界网络控制，而非仅由体相电导率决定。",
+        "这些结果提示，临界电流密度可能受晶界网络控制，而非仅由体相电导率决定。",
     _k("The activation energy measured between 298 K and 423 K is consistent with a space-charge layer at the grain boundary."):
         "在 298 K 至 423 K 间测得的活化能与晶界处的空间电荷层一致。",
     _k("We cannot exclude that a thin Li2CO3 layer contributes to the interfacial resistance."):
@@ -94,7 +94,7 @@ T: Dict[str, str] = {
     _k("Under conditions where the relative density exceeds 96%, dendrite penetration was not observed within 100 h."):
         "在相对密度超过 96% 的条件下，100 h 内未观察到枝晶穿透。",
     _k("These results suggest that sintering aids could lower the interfacial resistance; however, we did not test this directly."):
-        "这些结果表明烧结助剂可能降低界面电阻；然而，我们未直接测试这一点。",
+        "这些结果提示，烧结助剂可能降低界面电阻；然而，我们并未直接测试这一点。",
     _k("The relationship between grain size and critical current density is likely indirect, because grain size also changes the pore distribution."):
         "晶粒尺寸与临界电流密度之间的关系很可能是间接的，因为晶粒尺寸也会改变孔分布。",
     _k("We cannot exclude the possibility that residual Li2CO3 at the surface dominates the impedance at low temperature."):
@@ -105,7 +105,7 @@ T: Dict[str, str] = {
         "在这些发现能够推广到层叠电池之前，仍需进一步实验。",
 
     _k("我们采用 DFT 计算研究了 Li6PS5Cl 的 electronic structure，并对比了 experimental 的 ionic conductivity。"):
-        "我们采用 DFT 计算研究了 Li6PS5Cl 的电子结构，并对比了实验的离子电导率。",
+        "我们采用密度泛函理论（DFT）计算研究了 Li6PS5Cl 的电子结构，并对比了实验的离子电导率。",
     _k("在 298 K 下，the ionic conductivity 达到 3.8 × 10-4 S cm-1，而 the activation energy 为 0.31 eV。"):
         "在 298 K 下，离子电导率达到 3.8 × 10-4 S cm-1，而活化能为 0.31 eV。",
     _k("我们的 results 表明，grain boundary 的 Li2CO3 层会提高 interfacial resistance。"):

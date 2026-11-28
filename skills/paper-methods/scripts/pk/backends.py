@@ -497,6 +497,18 @@ def _extract_poppler(path: str) -> Dict[str, Any] | None:
     exe = shutil.which("pdftotext") or shutil.which("pdf-text-tool")
     if not exe:
         return None
+    # `-bbox-layout` keeps the word/line x,y coordinates that `-layout` throws
+    # away.  Without coordinates every line is a full-width 600 pt box, so the
+    # two-column detector cannot separate body text from a table and the table
+    # fallback happily turns paragraphs into cells.
+    if os.path.basename(exe).lower().startswith("pdftotext"):
+        try:
+            proc = subprocess.run([exe, "-bbox-layout", path, "-"],
+                                  capture_output=True, timeout=180)
+            if proc.returncode == 0 and proc.stdout:
+                return _parse_bbox_html(proc.stdout.decode("utf-8", "replace"))
+        except Exception:
+            pass
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "out.txt")
         cmd = [exe, "-layout", path, out]
@@ -526,6 +538,44 @@ def _extract_poppler(path: str) -> Dict[str, Any] | None:
                       "rotation": 0, "chars": len(chunk), "images": [],
                       "blocks": [{"bbox": [0, 0, 600, y], "lines": lines}] if lines else []})
     return {"backend": "poppler pdftotext", "pages": pages}
+
+
+def _parse_bbox_html(raw: str) -> Dict[str, Any] | None:
+    """Parse `pdftotext -bbox-layout` XHTML into the common page schema."""
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(raw)
+    except Exception:
+        return None
+    ns = "{http://www.w3.org/1999/xhtml}"
+    pages: List[Dict[str, Any]] = []
+    for pno, page in enumerate(root.iter(ns + "page"), 1):
+        width = float(page.get("width") or 600)
+        height = float(page.get("height") or 800)
+        lines: List[Dict[str, Any]] = []
+        for line in page.iter(ns + "line"):
+            words = [(w.text or "", float(w.get("xMin") or 0),
+                      float(w.get("xMax") or 0)) for w in line.iter(ns + "word")]
+            text = " ".join(w[0] for w in words if w[0]).strip()
+            if not text:
+                continue
+            lines.append({
+                "text": text,
+                "bbox": [float(line.get("xMin") or 0), float(line.get("yMin") or 0),
+                         float(line.get("xMax") or width), float(line.get("yMax") or 0)],
+                "tokens": [{"text": w[0], "x0": w[1], "x1": w[2]}
+                           for w in words if w[0]],
+                "size": 0.0, "bold": False, "italic": False, "font": "",
+            })
+        pages.append({
+            "number": pno, "width": width, "height": height, "rotation": 0,
+            "chars": sum(len(l["text"]) for l in lines), "images": [],
+            "blocks": ([{"bbox": [0, 0, width, height], "lines": lines}] if lines else []),
+            "lines": lines,
+        })
+    if not pages:
+        return None
+    return {"backend": "poppler pdftotext -bbox-layout", "pages": pages}
 
 
 # --------------------------------------------------------------------------- #
@@ -703,7 +753,8 @@ def render_page(path: str, page: int, dpi: int = 200) -> bytes | None:
         with tempfile.TemporaryDirectory() as td:
             prefix = os.path.join(td, "p")
             cmd = [exe, "-r", str(dpi), "-f", str(page), "-l", str(page), "-png", path, prefix] \
-                if exe.endswith("pdftoppm") else [exe, path, "-p", str(page), "-dpi", str(dpi), "-o", prefix]
+                if os.path.basename(exe).lower().startswith("pdftoppm") \
+                else [exe, path, "-p", str(page), "-dpi", str(dpi), "-o", prefix]
             try:
                 subprocess.run(cmd, check=True, capture_output=True, timeout=180)
                 for fn in sorted(os.listdir(td)):
@@ -740,7 +791,9 @@ def ocr_image(png: bytes, lang: str = "eng") -> str | None:
                 pass
         # Windows 10/11 ships an OCR engine; on this machine tesseract is absent
         # but `Windows.Media.Ocr` recognises both English and Chinese.
-        ps = shutil.which("powershell.exe") or shutil.which("pwsh")
+        ps = ((r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+               if os.path.exists(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe") else None)
+              or shutil.which("powershell.exe") or shutil.which("pwsh"))
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "win_ocr.ps1")
         if ps and os.path.exists(script):
             win_lang = "zh-Hans-CN" if str(lang).lower().startswith(("chi", "zh")) else "en-US"

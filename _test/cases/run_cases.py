@@ -54,7 +54,22 @@ def load(path, default=None):
 
 
 def dig(obj, key):
-    """First value stored under `key` anywhere in `obj`."""
+    """First value stored under `key` anywhere in `obj`.
+
+    `key` may be a dotted path (`content.tables`).  A result that mirrors the
+    case's declared nesting keeps no literal `content.tables` key, so the path
+    has to be walked; the literal lookup stays as a fallback for flat results.
+    """
+    if isinstance(obj, dict) and "." in str(key):
+        cur, ok = obj, True
+        for part in str(key).split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                ok = False
+                break
+        if ok:
+            return cur
     if isinstance(obj, dict):
         if key in obj:
             return obj[key]
