@@ -557,8 +557,19 @@ def issues(profile: str, doc: Dict[str, Any], payload: Dict[str, Any],
         elif main.count("{") != main.count("}"):
             out.append("project/main.tex has unbalanced braces")
         comp = p.get("compile") or {}
+        # The brief can forbid compiling ("本机无 TeX，compile.attempted 必须为 false").
+        # A gate that demands `attempted: true` then contradicts the deliverable
+        # the same brief asked for, and the run is capped at partial for
+        # obeying.  What is still checked: the reason must be on record.
+        brief_no_tex = bool(re.search(
+            r"无\s*TeX|没有\s*TeX|no\s+TeX|不得编译|不要编译|"
+            r"attempted\s*[:：]\s*false", _task(doc), re.I))
         if not comp.get("attempted"):
-            out.append("LaTeX compilation was not attempted (no TeX engine)")
+            if brief_no_tex:
+                if not (comp.get("errors") or comp.get("reason") or comp.get("skipped")):
+                    out.append("compile.attempted is false but no reason is recorded")
+            else:
+                out.append("LaTeX compilation was not attempted (no TeX engine)")
         elif not comp.get("ok"):
             out.append("LaTeX compilation failed")
         log = _file(out_dir, "project/compile.log")

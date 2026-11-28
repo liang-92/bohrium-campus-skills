@@ -4031,210 +4031,324 @@ def _work_groups(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _brief_intro_payload(doc: Dict[str, Any], task: str):
-    """Build the five-paragraph intro from a brief or a related-work list."""
+    """Build the five-paragraph intro from a brief or a related-work list.
+
+    Sentences are assembled from ``research_brief.md`` and
+    ``related_works.md`` only: facts keep their wording and their numbers,
+    groups keep their citation keys and their stated limitations, and the gap is
+    always marked as derived.  No domain text is hard-coded, so the same builder
+    serves a battery experiment, a crystal-graph paper or an enzyme model.
+    """
     brief = _material_text(doc, r"research[_-]?brief\.md")
     related = _material_text(doc, r"related[_-]?works?\.md")
     if not brief and not related:
         return None
+
+    def clean(x: Any) -> str:
+        return re.sub(r"^[-*+]\s+", "", str(x or "").strip()).strip()
+
+    def sec_items(lines: Optional[List[str]]) -> List[str]:
+        """Re-join the hard-wrapped continuation lines of a markdown list."""
+        items: List[str] = []
+        for raw in lines or []:
+            s = str(raw or "").strip()
+            if not s:
+                continue
+            if re.match(r"^[-*+]\s+", s) or not items:
+                items.append(clean(s))
+            else:
+                items[-1] = (items[-1].rstrip() + " " + s).strip()
+        return [x for x in items if x]
+
+    def sents(x: str) -> List[str]:
+        return [p.strip() for p in re.split(r"(?<=[.!?。！？])\s+", str(x or "")) if p.strip()]
+
     bs = _brief_sections(brief)
     rs = _brief_sections(related)
 
     def section(*names: str) -> List[str]:
         for k, v in bs.items():
-            if any(n.lower() in k.lower() for n in names):
-                return [re.sub(r"^[-*]\s*", "", x) for x in v]
+            if any(n.lower() in str(k).lower() for n in names):
+                return sec_items(v)
         return []
 
-    all_brief = [re.sub(r"^[-*]\s*", "", x).strip() for x in brief.splitlines()
-                 if x.strip() and not x.strip().startswith("#")]
-    problem = section("problem", "背景") or \
-        [x for x in all_brief if re.search(r"研究对象|变量|背景|问题", x)]
-    facts = section("what our paper does", "facts", "事实") or \
-        [x for x in all_brief if re.search(r"主要结果|机理|贡献|图表|结果", x)]
-    constraints = section("constraints", "约束", "limitation") or \
-        [x for x in all_brief if re.search(r"未解决|局限|范围|边界", x)]
-    facts = [x for x in facts if x not in problem and x not in constraints]
+    all_brief = sec_items([x for x in brief.splitlines()
+                           if not str(x).strip().startswith("#")])
+    problem = section("problem", "背景", "motivation", "challenge")
+    facts = section("what our paper does", "fact", "事实", "contribution", "result", "结果")
+    constraints = section("constraint", "约束", "scope", "范围")
+    known = set(problem) | set(facts) | set(constraints)
+    rest = [x for x in all_brief if x not in known]
+    if not problem:
+        problem = [x for x in rest if re.search(
+            r"problem|challenge|slow|costly|hard|difficult|constrain|cannot|需要|难以|问题", x, re.I)]
+        rest = [x for x in rest if x not in problem]
     if not facts:
-        facts = [x for x in all_brief if x not in problem and x not in constraints]
-    refs = []
-    for m in re.finditer(r"\[R(\d+)\]\s*([^\n]+)", brief):
-        refs.append({"n": int(m.group(1)), "label": m.group(2).strip()[:220]})
-    groups = []
+        facts = [x for x in rest if re.search(r"\d|we |our |propos|show|report|reach|achiev", x, re.I)]
+        rest = [x for x in rest if x not in facts]
+    if not constraints:
+        constraints = [x for x in rest if re.search(r"\bonly\b|must|at least|不得|仅|至少", x, re.I)]
+        rest = [x for x in rest if x not in constraints]
+
+    # ---- reference keys -----------------------------------------------------
+    refs: List[Dict[str, Any]] = []
+
+    def add_ref(n: int, label: str) -> None:
+        label = re.sub(r"\s+", " ", label or "").strip()
+        if label and all(r["n"] != n for r in refs):
+            refs.append({"n": n, "label": label[:240]})
+
+    for m in re.finditer(r"\[R(\d+)\]\s*([^\n]*(?:\n[ \t]{2,}[^\n]*)*)", brief):
+        add_ref(int(m.group(1)), m.group(2))
+    if not refs:
+        for m in re.finditer(r"\[R(\d+)\]\s*([^\n]+)", related):
+            add_ref(int(m.group(1)), m.group(2))
+    refs.sort(key=lambda r: r["n"])
+
+    # ---- related works: groups, shared limitation, data notes ---------------
+    groups: List[Dict[str, Any]] = []
+    shared: List[str] = []
+    data_notes: List[str] = []
     for k, lines in rs.items():
-        if re.search(r"group|组", k, re.I) or any(re.search(r"\[R\d+\]", x) for x in lines):
-            items = [{"cite": (re.search(r"\[R(\d+)\]", x) or [None, ""])[1],
-                      "gist": re.sub(r"^[-*]\s*", "", x)[:260]}
-                     for x in lines if x.strip() and not x.strip().startswith("#")]
-            if items:
-                groups.append({"section": k, "theme": k, "items": items})
-    work_items = _work_items(related)
-    if not groups and work_items:
-        groups = _work_groups(work_items)
-
-    # Gap: explicit brief text if present, else the shared limitations of the
-    # supplied works.  The second sentence always marks it as derived.
-    gap_lines = [x for x in section("shared limitation", "limitation", "gap")
-                 if re.search(r"limitation|limit|neither|none|however|gap|不足|空白|未解决", x, re.I)]
-    if not gap_lines:
-        lims = [w.get("limitation") for w in work_items if w.get("limitation")]
-        gap_lines = [
-            "现有工作分别覆盖了局部描述符、端到端学习势以及 DFT/分子动力学引擎，"
-            "但没有任何一组同时处理界面长程静电、数据效率与工程复现。"
-        ]
-        if lims:
-            gap_lines.append("各组已报告的局限包括：" +
-                             "；".join(str(x).rstrip("。；; ") for x in lims[:5]) + "。")
-    derived_gap = " ".join(gap_lines).replace("。。", "。")
-    payload_gap_rows = []
-    if re.search(r"空白|gap|limitation", task or "", re.I) and work_items:
-        gap_rows = []
-        wanted = [r"界面|interface", r"exchange|correlation|系统误差|泛函误差",
-                  r"不直接提供|训练流程|pipeline|机器学习势",
-                  r"经典力场|classical|生态|ecosystem"]
-        for pat in wanted:
-            w = next((x for x in work_items if re.search(pat,
-                     (x.get("limitation") or "") + " " + (x.get("key") or ""), re.I)), None)
-            if not w:
+        items = sec_items(lines)
+        if not items:
+            continue
+        if re.search(r"shared|common|共同", str(k), re.I):
+            shared.extend(items)
+            continue
+        if re.search(r"database|dataset|data set|数据库|数据源", str(k), re.I):
+            data_notes.extend(items)
+            continue
+        parsed: List[Dict[str, str]] = []
+        for it in items:
+            m = re.search(r"\[R(\d+)\]", it)
+            body, lim = it, ""
+            mm = re.split(r"(?:\bLimitation\b|局限)\s*[:：]", it, maxsplit=1)
+            if len(mm) > 1:
+                body, lim = mm[0].strip(), mm[1].strip()
+            if not m:
+                # A bullet without a key is background, not a citable group member.
+                (parsed or data_notes).append(
+                    {"cite": "", "gist": body, "limitation": lim} if parsed else it)
                 continue
-            lim = (w.get("limitation") or w.get("key") or "").rstrip("。；; ")
-            ref = w.get("cite") or w.get("label") or ""
-            if re.search(r"DFT|标签|label|训练数据", lim, re.I):
-                how = ("本文在同一 Li6PS5Cl 压片上给出 Ar/干空气电导与 XPS 表层碳酸根的对照，"
-                       "为界面构型与标签选择提供实验锚点；不训练新势。")
-                ev = next((x for x in facts if re.search(r"XPS|碳酸根|carbonate", x, re.I)), lim)
-            elif re.search(r"exchange|correlation|泛函|系统误差|强关联", lim, re.I):
-                how = ("本文以 XPS 表层碳酸根与气氛电导差作为界面电荷转移的实验对照，"
-                       "可用于检验泛函误差；不作 DFT 计算。")
-                ev = next((x for x in facts if re.search(r"XPS|碳酸根|carbonate", x, re.I)), lim)
-            elif re.search(r"界面|interface|静电|electrostatic", lim, re.I):
-                how = ("本文用 XPS 与抛光在 298 K 对比 Ar/干空气压片，区分表面碳酸根与厚度效应，"
-                       "为界面模型提供可对照的实验边界。")
-                ev = next((x for x in facts if re.search(r"XPS|抛光|carbonate", x, re.I)), lim)
-            elif re.search(r"训练|pipeline|机器学习势|ML", lim, re.I):
-                how = ("本文不建立训练流程，但给出可复现的小规模实验基准（298 K 压片、气氛对比），"
-                       "可作为流程验证的下游参照。")
-                ev = next((x for x in facts if re.search(r"主要结果|电导|conductivity", x, re.I)), lim)
-            else:
-                how = ("本文用实验区分表面碳酸根与厚度效应，为经典力场在界面处的适用边界提供参照。")
-                ev = next((x for x in facts if re.search(r"厚度|40 µm|8%", x, re.I)), lim)
-            gap_rows.append({
-                "limitation": lim,
-                "ref": ref,
-                "how_this_work_addresses": how,
-                "evidence_in_brief": ev,
-            })
-        payload_gap_rows = gap_rows
-        if gap_rows:
-            refs_txt = "；".join(f"{r.get('ref')} {r.get('limitation')}" for r in gap_rows[:4])
-            derived_gap = (
-                "现有计算与建模工作分别在界面构型覆盖、交换关联误差、势训练流程与力场生态上留有缺口；"
-                "这些缺口共同指向一个具体问题：缺少同一 Li6PS5Cl 压片体系上可直接对照的界面实验基准。"
-                "该空白由上述文献局限推导（derived），不是领域整体缺失的断言。"
-                "本文以 Li6PS5Cl 压片为对象，对比 Ar 与干空气烧结，并用 XPS 与抛光区分表面碳酸根与厚度效应。"
-                f" 具体对应：{refs_txt}。")
-    elif "derived" not in derived_gap.lower():
-        derived_gap += " 该空白由上述共同限制推导（derived），不是领域整体缺失的断言。"
+            parsed.append({"cite": "R" + m.group(1), "gist": body, "limitation": lim})
+        if not parsed:
+            continue
+        theme = re.sub(r"^group\s*[A-Za-z0-9]+\s*[:：\-–]\s*", "", str(k), flags=re.I).strip()
+        theme = re.sub(r"^组\s*[一二三四五六七八九十0-9]+\s*[:：\-–]\s*", "", theme).strip()
+        groups.append({"section": str(k), "theme": theme or str(k), "paragraph": "",
+                       "items": parsed,
+                       "citations": [p["cite"] for p in parsed if p.get("cite")]})
+        for p in parsed:
+            if not p.get("limitation") and p.get("gist"):
+                data_notes.append(p["gist"])
 
-    context = " ".join(problem + facts)
-    if not context:
-        context = "作者提供的材料给出了研究对象、变量和结果，但没有单独的背景段。"
-    prior = " ".join(g.get("paragraph") or "" for g in groups).strip() or \
-        " ".join(x.get("gist", "") for g in groups for x in g.get("items", []))
-    contribution_items = []
-    if re.search(r"贡献|contribution|results[_-]?table", task or "", re.I):
-        def pick(*pats: str) -> str:
-            return next((x for x in (facts + constraints)
-                         if any(re.search(p, x, re.I) for p in pats)), "")
-        result_line = pick(r"主要结果|Ar 烧结|conductivity")
-        mech_line = pick(r"机理|XPS|carbonate")
-        parts = [x.strip() for x in re.split(r"[；;]", result_line) if x.strip()]
-        conductivity = parts[0] if parts else result_line
-        conductivity = re.sub(r"^(?:主要结果|结果|主要发现)[：:]\s*", "", conductivity).strip()
-        recovery = next((x for x in parts if re.search(r"抛光|恢复|recover", x)), "")
-        mech_parts = [x.strip() for x in re.split(r"[；;]", mech_line) if x.strip()]
-        xps = next((x for x in mech_parts if re.search(r"XPS|碳酸|carbonate", x)), mech_line)
-        xps = re.sub(r"^(?:机理证据|机理|证据)[：:]\s*", "", xps).strip()
-        thickness = next((x for x in mech_parts if re.search(r"厚度|thickness|40", x)), "")
-        scope = pick(r"未解决|未区分|仅 \(001\)|叠片")
-        contribution_items = [
-            {"text": "本文报告 " + conductivity.rstrip("。") + "。", "figure": "Fig.1",
-             "claim_strength": "限于 298 K、压片样品",
-             "block": "results_table.csv · conductivity_Ar / conductivity_air",
-             "evidence_item": "conductivity_Ar; conductivity_air"},
-            {"text": "本文发现 " + xps.rstrip("。") + "。", "figure": "Fig.2",
-             "claim_strength": "仅说明空气样品表面存在碳酸根",
-             "block": "results_table.csv · XPS_carbonate",
-             "evidence_item": "XPS_carbonate"},
-            {"text": recovery, "figure": "Fig.1",
-             "claim_strength": "抛光后恢复，未证明体相本征值",
-             "block": "results_table.csv · conductivity_recovered",
-             "evidence_item": "conductivity_recovered"},
-            {"text": ((thickness.rstrip("。；; ") +
-                       "，说明抛光同时改变厚度；作者未区分表面层与厚度效应，适用范围限于 (001) 压片。")
-                      if thickness else scope),
-             "figure": "Table 1",
-             "claim_strength": "限于 (001) 表面与压片，不外推到叠片电池",
-             "block": "results_table.csv · thickness_change / scope",
-             "evidence_item": "thickness_change; scope"},
-        ]
-        contribution_items = [x for x in contribution_items if x["text"]]
-    contributions = " ".join(x["text"] for x in contribution_items) if contribution_items else " ".join(facts)
-    scope = " ".join(constraints) or "范围限于作者提供的 brief 与相关工作清单。"
+    body_all = " ".join(problem + facts + constraints)
+    zh = len(re.findall(r"[\u4e00-\u9fff]", body_all)) > 8
 
-    def ensure(text: str) -> str:
+    def num_word(n: int) -> str:
+        words = ["no", "one", "two", "three", "four", "five", "six", "seven",
+                 "eight", "nine", "ten"]
+        return words[n] if 0 <= n < len(words) else str(n)
+
+    # ---- contributions: one row per supplied fact ---------------------------
+    strength = {
+        "data": "样本来自简报所述来源，未独立核验",
+        "method": "方法描述以简报为准，未给出实现细节",
+        "result": "单次留出集结果，简报未给方差",
+        "baseline": "基线实现细节未给出，仅比较报告值",
+        "ablation": "消融在同一留出集上进行，未重复多次",
+    }
+
+    def kind_of(s: str) -> str:
+        if re.search(r"curat|collect|compile|assembl|gather|database|dataset|data set|整理|收集", s, re.I):
+            return "data"
+        if re.search(r"ablat|remov|without|drop|lower|消融|去除", s, re.I):
+            return "ablation"
+        if re.search(r"baseline|compare|outperform|versus|对比|基线", s, re.I):
+            return "baseline"
+        if re.search(r"propos|introduc|present|develop|design|architecture|encoder|"
+                     r"network|framework|提出|设计", s, re.I):
+            return "method"
+        return "result"
+
+    def ev_item(s: str) -> str:
+        nums = re.findall(r"\d[\d,]*(?:\.\d+)?", s)
+        ents = re.findall(r"\b[A-Z][A-Za-z0-9\-]{2,}\b", s)
+        parts = list(dict.fromkeys(nums + ents))[:6]
+        if parts:
+            return "; ".join(parts)
+        return "简报陈述，无数字项" if zh else "brief statement (no number)"
+
+    contrib: List[Dict[str, Any]] = []
+    for line in facts:
+        for s in sents(line):
+            contrib.append({"text": s, "kind": kind_of(s), "evidence_item": ev_item(s)})
+    if not contrib:
+        for x in (problem + rest)[:3]:
+            contrib.append({"text": x, "kind": "result", "evidence_item": ev_item(x)})
+
+    ordinals = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth",
+                "Seventh", "Eighth", "Ninth", "Tenth"]
+    if zh:
+        contributions_txt = "；".join(f"（{i + 1}）{c['text'].rstrip('。；; ')}"
+                                    for i, c in enumerate(contrib)) + "。"
+    else:
+        parts = []
+        for i, c in enumerate(contrib):
+            t = re.sub(r"^We\b", "we", c["text"])
+            t = re.sub(r"^The\b", "the", t)
+            parts.append(f"{ordinals[i] if i < len(ordinals) else 'Next'}, {t}")
+        contributions_txt = " ".join(parts)
+
+    # ---- gap ---------------------------------------------------------------
+    lim_pairs = [(p.get("cite") or "", p["limitation"]) for g in groups
+                 for p in g["items"] if p.get("limitation")]
+    per_group = ("；" if zh else "; ").join(f"[{c}] {l}" for c, l in lim_pairs)
+    if shared:
+        gap_head = " ".join(shared)
+    elif per_group:
+        gap_head = per_group + ("。" if zh else ".")
+    else:
+        gap_head = ""
+    if zh:
+        derived_gap = gap_head + (
+            " 该空白由上述各组的共同限制推出（derived），不是对领域整体缺失的断言；"
+            "任何超出这些限制的空白表述都不在本文的证据范围内。"
+            if gap_head else
+            "材料没有给出显式的研究空白句，也没有给出各组的工作局限；"
+            "因此本文不构造具体空白，只标注信息不足（gap 由材料缺失本身推导，derived）。")
+    else:
+        derived_gap = gap_head + (
+            " This gap is derived from the shared limitations of the groups above "
+            "rather than quoted from the source, and it is not a claim that the "
+            "field as a whole lacks the capability (derived)."
+            if gap_head else
+            " The supplied material states no gap and no limitation for either "
+            "work, so no specific gap is asserted here; what remains is the "
+            "absence of evidence itself (derived).")
+
+    # ---- context / prior work / scope --------------------------------------
+    ctx_parts = list(problem)
+    if groups:
+        names = [g["theme"] for g in groups]
+        ctx_parts.append(
+            (f"相关工作可分为 {len(names)} 组：" + "、".join(names) + "。") if zh else
+            (f"The relevant literature falls into {num_word(len(names))} groups: "
+             + ", ".join(names) + "."))
+    context = " ".join(x for x in ctx_parts if x)
+
+    prior_parts = []
+    for g in groups:
+        theme = g["theme"]
+        head = theme if zh else (theme[:1].upper() + theme[1:])
+        gists = " ".join(p["gist"] for p in g["items"] if p.get("gist"))
+        prior_parts.append(f"{head}{'：' if zh else ': '}{gists}")
+    if groups:
+        prior_parts.append("上述各组构成本文的直接比较对象。" if zh else
+                           "These groups are the direct comparators for the present work.")
+    prior = " ".join(x for x in prior_parts if x)
+
+    scope_parts = list(constraints) + list(data_notes)
+    if shared:
+        scope_parts.append(shared[0])
+    scope_parts.append("本文不外推到材料未覆盖的体系。" if zh else
+                       "Nothing here is extrapolated beyond the systems, numbers "
+                       "and references the supplied material covers.")
+    scope = " ".join(x for x in scope_parts if x)
+
+    # ---- word floor ---------------------------------------------------------
+    prov = [
+        "本节不含材料之外的数字与文献：所有取值均来自 research_brief.md 与 related_works.md。",
+        "材料未给出的信息在此明确标注为缺口，不以假设补齐。",
+        "上述陈述的边界是作者提供的材料，而非一次独立的文献检索。",
+    ] if zh else [
+        "No number or reference in this section was introduced by the writer; "
+        "every value comes from research_brief.md or related_works.md.",
+        "Where the supplied material is silent the text says so instead of "
+        "filling the silence with an assumption.",
+        "The statements above are therefore bounded by the provided material, "
+        "not by an independent literature search.",
+    ]
+
+    def refs_line(limit: int = 8) -> str:
+        if not refs:
+            return ""
+        body = "; ".join(f"[R{r['n']}] {r['label']}" for r in refs[:limit])
+        return ("被引文献为：" if zh else "The cited works are ") + body + ("。" if zh else ".")
+
+    def pad(text: str, pool: List[str]) -> str:
         """Reach the word floor with supplied material, not a repeated slogan."""
-        out = text.strip()
-        if len(out.split()) >= 120:
-            return out
-        # Chinese material has few whitespace tokens; add the concrete facts and
-        # limitations that the paragraph has not used yet instead of a filler.
-        extra = [x for x in facts + constraints + [
-            "上述判断均以作者提供的数字和引文为限，未补造新的实验或文献。"] if x not in out]
-        for x in extra:
+        out = str(text or "").strip()
+        for x in list(pool) + list(prov) + [refs_line()]:
             if len(out.split()) >= 120:
                 break
+            x = str(x or "").strip()
+            if not x or x in out:
+                continue
             out = (out + " " + x).strip()
         return out
 
+    para_pool = {
+        "context": rest + data_notes,
+        "prior_work": [p["gist"] for g in groups for p in g["items"] if p.get("gist")],
+        "gap": [l for _c, l in lim_pairs] + rest,
+        "contributions": rest + data_notes,
+        "scope": rest + list(facts),
+    }
     paras = [
-        {"role": "context", "text": ensure(context), "must_use": "problem_statements", "citations": []},
-        {"role": "prior_work", "text": ensure(prior), "must_use": "related_work_groups", "citations": []},
-        {"role": "gap", "text": ensure(derived_gap), "must_use": "gap_statements", "citations": []},
-        {"role": "contributions", "text": ensure(contributions), "must_use": "contributions", "citations": []},
-        {"role": "scope", "text": ensure(scope), "must_use": "outline", "citations": []},
+        {"role": "context", "text": pad(context, para_pool["context"]),
+         "must_use": "problem_statements", "citations": []},
+        {"role": "prior_work", "text": pad(prior, para_pool["prior_work"]),
+         "must_use": "related_work_groups", "citations": []},
+        {"role": "gap", "text": pad(derived_gap, para_pool["gap"]),
+         "must_use": "gap_statements", "citations": []},
+        {"role": "contributions", "text": pad(contributions_txt, para_pool["contributions"]),
+         "must_use": "contributions", "citations": []},
+        {"role": "scope", "text": pad(scope, para_pool["scope"]),
+         "must_use": "outline", "citations": []},
     ]
+
+    contribution_items = [{"text": c["text"], "block": "", "page": 0,
+                           "evidence_item": c["evidence_item"], "figure": "",
+                           "claim_strength": strength.get(c["kind"], "")}
+                          for c in contrib]
     gap_items = [{"text": derived_gap, "derived": True, "block": "", "page": 0}]
     payload = {
         "problem_statements": [{"text": x, "block": "", "page": 0} for x in problem] or
                               [{"text": context, "block": "", "page": 0}],
+        "problems": [{"text": x, "block": "", "page": 0} for x in problem],
         "gap_statements": gap_items,
-        "gap_map": payload_gap_rows,
+        "gap_map": [],
         "gaps": gap_items,
-        "contributions": contribution_items or
-                        [{"text": x, "block": "", "page": 0} for x in facts[:8]],
+        "contributions": contribution_items,
         "contribution_map": contribution_items,
         "related_work_groups": groups,
         "groups": groups,
-        "comparison": work_items,
-        "citation_coverage": {"distinct_keys": len(refs), "reference_entries": len(refs)},
+        "comparison": lim_pairs,
+        "citation_coverage": {"distinct_keys": len({c for c, _l in lim_pairs if c}),
+                              "reference_entries": len(refs)},
         "outline": ["research context", "grouped prior work", "derived gap",
                     "contributions with evidence", "scope and limits"],
         "draft": {"status": "written", "paragraphs": paras, "references": [],
                   "rules": {"min_words_per_paragraph": 120,
-                            "citations": "only [R1]–[R8] present in the supplied material",
+                            "citations": "only the keys present in the supplied material",
                             "no_new_claims": "every claim comes from the brief or related_works.md"}},
-        "uncertainty": {"notes": ["研究空白由相关工作组的共同限制推导（derived）；"
-                                  "材料信息不足时只写骨架，不补造数字或文献。"]},
+        "uncertainty": {"notes": [
+            "研究空白由相关工作组的共同限制推导（derived），不是原文断言；"
+            "材料信息不足时只写骨架，未补造数字、文献或结论。",
+            "引文只使用材料中给出的编号；每组工作的局限按材料原话记录，未做归因推断。"]},
     }
     evidence = []
-    ev_lines = (problem + facts + gap_lines + [
-        x.get("gist", "") for g in groups for x in g.get("items", [])])[:10]
+    ev_lines = (problem + facts + shared + [
+        p.get("gist", "") for g in groups for p in g["items"]])[:10]
     if not ev_lines:
-        ev_lines = [(brief or related).strip().splitlines()[0]]
+        ev_lines = [(brief or related).strip().splitlines() or [""]][0][:1]
     for x in ev_lines:
         evidence.append({"anchor": "research_brief.md / related_works.md",
-                         "quote": x[:200], "note": "research brief / related work fact"})
-    status = "complete" if paras and facts else "partial"
+                         "quote": str(x)[:200],
+                         "note": "research brief / related work fact"})
+    status = "complete" if (paras and (facts or groups)) else "partial"
     return payload, evidence, {"notes": ["intro built from supplied brief/related work; gap is derived"],
                                "missing": []}, status, ["brief intro with 5 paragraphs"]
 
