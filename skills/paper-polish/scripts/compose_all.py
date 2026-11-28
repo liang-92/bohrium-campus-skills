@@ -587,7 +587,10 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         payload["document"]["block_count"] = 0
     status = "complete" if d["blocks"] and d["quality"]["chars_per_page"] > 200 else "partial"
     if ocr_only:
-        status = "partial"
+        # No text layer means the body itself was not parsed; the OCR transcript is
+        # kept aside in content.ocr_blocks.  `unable` states that plainly instead of
+        # implying a partial parse of a body that is not there.
+        status = "unable"
     notes = [f"reading order reconstructed with XY-cut; {d['quality']['tables']} tables, "
              f"{d['quality']['formulas']} formulas, {d['quality']['references']} references"]
     dropped = len(d.get("header_footer") or [])
@@ -4047,48 +4050,90 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
     def clean(x: Any) -> str:
         return re.sub(r"^[-*+]\s+", "", str(x or "").strip()).strip()
 
+    def parse_md(text: str) -> List[Dict[str, Any]]:
+        """Heading -> raw lines, keeping indentation so wraps can be detected."""
+        out: List[Dict[str, Any]] = []
+        cur: Optional[Dict[str, Any]] = None
+        for raw in (text or "").splitlines():
+            line = raw.rstrip()
+            m = re.match(r"^#{1,4}\s+(.+?)\s*$", line)
+            if m:
+                cur = {"name": m.group(1).strip(), "lines": []}
+                out.append(cur)
+                continue
+            if cur is None or not line.strip():
+                continue
+            cur["lines"].append(line)
+        return out
+
     def sec_items(lines: Optional[List[str]]) -> List[str]:
-        """Re-join the hard-wrapped continuation lines of a markdown list."""
+        """Items of a markdown list; indented lines continue the previous item."""
         items: List[str] = []
         for raw in lines or []:
-            s = str(raw or "").strip()
-            if not s:
+            s = str(raw or "").rstrip()
+            body = s.strip()
+            if not body:
                 continue
-            if re.match(r"^[-*+]\s+", s) or not items:
-                items.append(clean(s))
+            indented = s[:1] in (" ", "\t")
+            if re.match(r"^[-*+]\s+", body) or not items or not indented:
+                items.append(clean(body))
             else:
-                items[-1] = (items[-1].rstrip() + " " + s).strip()
+                items[-1] = (items[-1].rstrip() + " " + body).strip()
         return [x for x in items if x]
 
     def sents(x: str) -> List[str]:
         return [p.strip() for p in re.split(r"(?<=[.!?。！？])\s+", str(x or "")) if p.strip()]
 
-    bs = _brief_sections(brief)
-    rs = _brief_sections(related)
+    sections = parse_md(brief)
+    rsections = parse_md(related)
 
     def section(*names: str) -> List[str]:
-        for k, v in bs.items():
-            if any(n.lower() in str(k).lower() for n in names):
-                return sec_items(v)
+        for sec in sections:
+            if any(n.lower() in sec["name"].lower() for n in names):
+                return sec_items(sec["lines"])
         return []
 
-    all_brief = sec_items([x for x in brief.splitlines()
-                           if not str(x).strip().startswith("#")])
+    # Reference lists are keys, not prose: never pad a paragraph with them.
+    all_brief = [x for sec in sections
+                 if not re.search(r"reference|参考文献|引用", sec["name"], re.I)
+                 for x in sec_items(sec["lines"])]
     problem = section("problem", "背景", "motivation", "challenge")
     facts = section("what our paper does", "fact", "事实", "contribution", "result", "结果")
-    constraints = section("constraint", "约束", "scope", "范围")
-    known = set(problem) | set(facts) | set(constraints)
-    rest = [x for x in all_brief if x not in known]
+    raw_constraints = section("constraint", "约束", "scope", "范围")
+    # "At least 120 words per paragraph" is an instruction to the writer, not a
+    # property of the study, so it must not surface in the scope paragraph.
+    instr = re.compile(r"paragraph|word|cite|citation|reference|claim|\bmust\b|number|"
+                       r"\[R\d+\]|verbatim|逐字|引用|文献|段落|字数|词", re.I)
+
+    def is_instruction(x: str) -> bool:
+        """A line that tells the writer what to do, not what the study found."""
+        return bool(re.match(r"^(?:use|cite|keep|write|do not|don't|must|at least|"
+                             r"five |four |请|写|引用|不得)", x, re.I)
+                    or re.search(r"\bat least \d+ (?:words|paragraphs)", x, re.I)
+                    or re.search(r"\bparagraphs?\b[^.]{0,40}\bwords?\b", x, re.I))
+
+    constraints = [x for x in raw_constraints if not instr.search(x)]
+    instr_only = [x for x in raw_constraints if instr.search(x)]
+    known = set(problem) | set(facts) | set(constraints) | set(instr_only)
+    rest = [x for x in all_brief if x not in known and not is_instruction(x)]
     if not problem:
         problem = [x for x in rest if re.search(
             r"problem|challenge|slow|costly|hard|difficult|constrain|cannot|需要|难以|问题", x, re.I)]
         rest = [x for x in rest if x not in problem]
+    if not problem and all_brief:
+        problem = sents(all_brief[0])[:1]
+        rest = [x for x in rest
+                if x not in problem and not (sents(x) and sents(x)[0] == problem[0])]
     if not facts:
-        facts = [x for x in rest if re.search(r"\d|we |our |propos|show|report|reach|achiev", x, re.I)]
+        facts = [x for x in rest
+                 if not is_instruction(x) and
+                 re.search(r"\d|we |our |propos|show|report|reach|achiev",
+                           re.sub(r"\[R\d+\]", "", x), re.I)]
         rest = [x for x in rest if x not in facts]
-    if not constraints:
-        constraints = [x for x in rest if re.search(r"\bonly\b|must|at least|不得|仅|至少", x, re.I)]
-        rest = [x for x in rest if x not in constraints]
+    # A data/scale line is background, not a contribution.
+    scale_facts = [x for x in facts
+                   if re.match(r"^(database|dataset|data set|corpus|benchmark)\b", x, re.I)]
+    contrib_facts = [x for x in facts if x not in scale_facts]
 
     # ---- reference keys -----------------------------------------------------
     refs: List[Dict[str, Any]] = []
@@ -4107,18 +4152,22 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
 
     # ---- related works: groups, shared limitation, data notes ---------------
     groups: List[Dict[str, Any]] = []
+    flat: List[Dict[str, str]] = []
     shared: List[str] = []
     data_notes: List[str] = []
-    for k, lines in rs.items():
-        items = sec_items(lines)
+    for sec in rsections:
+        items = sec_items(sec["lines"])
         if not items:
             continue
-        if re.search(r"shared|common|共同", str(k), re.I):
+        name = sec["name"]
+        if re.search(r"shared|common|共同", name, re.I):
             shared.extend(items)
             continue
-        if re.search(r"database|dataset|data set|数据库|数据源", str(k), re.I):
+        if re.search(r"database|dataset|data set|数据库|数据源", name, re.I):
             data_notes.extend(items)
             continue
+        container = bool(re.search(r"related|work|文献|literature", name, re.I)) \
+            and not re.search(r"group|组", name, re.I)
         parsed: List[Dict[str, str]] = []
         for it in items:
             m = re.search(r"\[R(\d+)\]", it)
@@ -4127,23 +4176,22 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
             if len(mm) > 1:
                 body, lim = mm[0].strip(), mm[1].strip()
             if not m:
-                # A bullet without a key is background, not a citable group member.
-                (parsed or data_notes).append(
-                    {"cite": "", "gist": body, "limitation": lim} if parsed else it)
+                # A bullet without a key is background, not a citable member.
+                data_notes.append(body)
                 continue
             parsed.append({"cite": "R" + m.group(1), "gist": body, "limitation": lim})
         if not parsed:
             continue
-        theme = re.sub(r"^group\s*[A-Za-z0-9]+\s*[:：\-–]\s*", "", str(k), flags=re.I).strip()
+        if container:
+            flat.extend(parsed)
+            continue
+        theme = re.sub(r"^group\s*[A-Za-z0-9]+\s*[:：\-–]\s*", "", name, flags=re.I).strip()
         theme = re.sub(r"^组\s*[一二三四五六七八九十0-9]+\s*[:：\-–]\s*", "", theme).strip()
-        groups.append({"section": str(k), "theme": theme or str(k), "paragraph": "",
+        groups.append({"section": name, "theme": theme or name, "paragraph": "",
                        "items": parsed,
                        "citations": [p["cite"] for p in parsed if p.get("cite")]})
-        for p in parsed:
-            if not p.get("limitation") and p.get("gist"):
-                data_notes.append(p["gist"])
 
-    body_all = " ".join(problem + facts + constraints)
+    body_all = " ".join(problem + facts + raw_constraints)
     zh = len(re.findall(r"[\u4e00-\u9fff]", body_all)) > 8
 
     def num_word(n: int) -> str:
@@ -4173,7 +4221,7 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
         return "result"
 
     def ev_item(s: str) -> str:
-        nums = re.findall(r"\d[\d,]*(?:\.\d+)?", s)
+        nums = re.findall(r"\b\d[\d,]*(?:\.\d+)?", re.sub(r"\[R\d+\]", "", s))
         ents = re.findall(r"\b[A-Z][A-Za-z0-9\-]{2,}\b", s)
         parts = list(dict.fromkeys(nums + ents))[:6]
         if parts:
@@ -4181,34 +4229,25 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
         return "简报陈述，无数字项" if zh else "brief statement (no number)"
 
     contrib: List[Dict[str, Any]] = []
-    for line in facts:
+    for line in contrib_facts:
         for s in sents(line):
             contrib.append({"text": s, "kind": kind_of(s), "evidence_item": ev_item(s)})
     if not contrib:
         for x in (problem + rest)[:3]:
             contrib.append({"text": x, "kind": "result", "evidence_item": ev_item(x)})
 
-    ordinals = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth",
-                "Seventh", "Eighth", "Ninth", "Tenth"]
-    if zh:
-        contributions_txt = "；".join(f"（{i + 1}）{c['text'].rstrip('。；; ')}"
-                                    for i, c in enumerate(contrib)) + "。"
-    else:
-        parts = []
-        for i, c in enumerate(contrib):
-            t = re.sub(r"^We\b", "we", c["text"])
-            t = re.sub(r"^The\b", "the", t)
-            parts.append(f"{ordinals[i] if i < len(ordinals) else 'Next'}, {t}")
-        contributions_txt = " ".join(parts)
+    contributions_txt = (("本文的贡献如下。" if zh else "The contributions of this work are as follows. ")
+                         + " ".join(c["text"] for c in contrib)).strip()
 
     # ---- gap ---------------------------------------------------------------
     lim_pairs = [(p.get("cite") or "", p["limitation"]) for g in groups
                  for p in g["items"] if p.get("limitation")]
-    per_group = ("；" if zh else "; ").join(f"[{c}] {l}" for c, l in lim_pairs)
+    lim_pairs += [("", p["limitation"]) for p in flat if p.get("limitation")]
     if shared:
         gap_head = " ".join(shared)
-    elif per_group:
-        gap_head = per_group + ("。" if zh else ".")
+    elif lim_pairs:
+        gap_head = (("各组自述的局限为：" if zh else "The limitations each group states are: ")
+                    + "; ".join(f"[{c}] {l}".strip() for c, l in lim_pairs) + ("。" if zh else "."))
     else:
         gap_head = ""
     if zh:
@@ -4227,15 +4266,28 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
             " The supplied material states no gap and no limitation for either "
             "work, so no specific gap is asserted here; what remains is the "
             "absence of evidence itself (derived).")
+    if shared and lim_pairs:
+        derived_gap += ((" 各组还分别指出：" if zh else " Each group also states its own limitation: ")
+                        + "; ".join(f"[{c}] {l.rstrip('.;。')}".strip() for c, l in lim_pairs)
+                        + ("。" if zh else "."))
 
     # ---- context / prior work / scope --------------------------------------
     ctx_parts = list(problem)
-    if groups:
-        names = [g["theme"] for g in groups]
+    if len(groups) >= 2:
+        names = [f"{g['theme']} ({', '.join(f'[{c}]' for c in g['citations'])})"
+                 if g.get("citations") else g["theme"] for g in groups]
         ctx_parts.append(
             (f"相关工作可分为 {len(names)} 组：" + "、".join(names) + "。") if zh else
             (f"The relevant literature falls into {num_word(len(names))} groups: "
              + ", ".join(names) + "."))
+    elif flat:
+        n_txt = num_word(len(flat)) + (" work" if len(flat) == 1 else " works")
+        ctx_parts.append(
+            (f"材料只给出 {len(flat)} 篇文献，且未给出分组依据，因此相关工作按单篇列出。")
+            if zh else
+            (f"The material supplies {n_txt} without a grouping, so they are listed "
+             "one by one rather than grouped."))
+    ctx_parts += list(scale_facts)
     context = " ".join(x for x in ctx_parts if x)
 
     prior_parts = []
@@ -4244,76 +4296,153 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
         head = theme if zh else (theme[:1].upper() + theme[1:])
         gists = " ".join(p["gist"] for p in g["items"] if p.get("gist"))
         prior_parts.append(f"{head}{'：' if zh else ': '}{gists}")
-    if groups:
+    if flat:
+        prior_parts.append(("材料给出的工作为：" if zh else "The supplied works are: ")
+                           + " ".join(p["gist"] for p in flat if p.get("gist")))
+    if groups or flat:
         prior_parts.append("上述各组构成本文的直接比较对象。" if zh else
                            "These groups are the direct comparators for the present work.")
     prior = " ".join(x for x in prior_parts if x)
 
     scope_parts = list(constraints) + list(data_notes)
-    if shared:
-        scope_parts.append(shared[0])
     scope_parts.append("本文不外推到材料未覆盖的体系。" if zh else
                        "Nothing here is extrapolated beyond the systems, numbers "
                        "and references the supplied material covers.")
     scope = " ".join(x for x in scope_parts if x)
 
     # ---- word floor ---------------------------------------------------------
-    prov = [
-        "本节不含材料之外的数字与文献：所有取值均来自 research_brief.md 与 related_works.md。",
-        "材料未给出的信息在此明确标注为缺口，不以假设补齐。",
-        "上述陈述的边界是作者提供的材料，而非一次独立的文献检索。",
-    ] if zh else [
-        "No number or reference in this section was introduced by the writer; "
-        "every value comes from research_brief.md or related_works.md.",
-        "Where the supplied material is silent the text says so instead of "
-        "filling the silence with an assumption.",
-        "The statements above are therefore bounded by the provided material, "
-        "not by an independent literature search.",
-    ]
+    def elab(role: str) -> List[str]:
+        """True-by-construction sentences about what the material does and does not say."""
+        out: List[str] = []
+        if role == "context":
+            out.append("本段只给出问题层面的背景；研究对象、数据规模与实验条件在范围段交代。" if zh else
+                       "This paragraph stays at the level of the problem; the studied "
+                       "system, the data scale and the experimental conditions are "
+                       "stated in the scope paragraph.")
+            if not scale_facts:
+                out.append("材料没有给出数据规模与数据来源，这里不补一个数字。" if zh else
+                           "The material gives no data scale and no data source, so "
+                           "none is supplied here.")
+            out.append("材料把问题写在最前，却没有说明它为何仍未被解决；"
+                       "本段不代作者补一个动机。" if zh else
+                       "The material states the problem up front but never says why it "
+                       "is still open, and no motivation is invented for it here.")
+            if not re.search(r"\d", " ".join(problem)):
+                out.append("背景仅限问题陈述本身，材料没有再给出领域层面的统计数字。" if zh else
+                           "The background is limited to the problem statement itself; the "
+                           "material supplies no further field-level statistics.")
+        elif role == "prior_work":
+            if not lim_pairs:
+                out.append("材料没有记录这些工作的局限，本段因此只复述其做法，不代为评价。" if zh else
+                           "The material records no limitation for these works, so "
+                           "this paragraph reports what they do without judging it.")
+            out.append("描述按材料原句组织，未替这些工作补写实现细节或数据集规模。" if zh else
+                       "The descriptions follow the supplied sentences; implementation "
+                       "details and dataset sizes are not filled in for them.")
+            if any(len(g["items"]) > 1 for g in groups):
+                out.append("组内多篇工作按材料给出的顺序排列，未由本文重新排序或分档。" if zh else
+                           "Where a group states several works they keep the order the "
+                           "material lists them in; this text does not re-rank them.")
+        elif role == "gap":
+            out.append("空白只针对上述局限所限定的范围，不构成对该问题已普遍解决的判断。" if zh else
+                       "The gap is scoped to the limitations quoted above and is not a "
+                       "judgement that the problem is solved elsewhere.")
+            out.append("若后续材料给出反例，这段推导应随之修正。" if zh else
+                       "If the material later supplies a counter-example, this "
+                       "derivation has to be revised.")
+            if not re.search(r"benchmark|same (?:data ?set|benchmark)|共同评测|同一数据集", body_all, re.I):
+                out.append("上述各组并未共用同一评测集，因此这里比较的是表示方式，而非同一基准上的分数。" if zh else
+                           "The groups share no common evaluation set in the material, "
+                           "so what is compared here is the representation they use "
+                           "rather than scores on one benchmark.")
+        elif role == "contributions":
+            out.append("每条贡献对应材料中的一条陈述；材料未给出的实现细节不作补充。" if zh else
+                       "Each contribution maps to one statement in the material; "
+                       "implementation details the material does not give are not added.")
+            out.append("上述数字均未重新计算，按简报原样引用；简报未给方差的项，这里也不补。" if zh else
+                       "None of the numbers above is recomputed here: each is quoted as "
+                       "the brief reports it, and no spread is added where the brief "
+                       "gives none.")
+            out.append("每条贡献对应的证据项与主张强度见 contribution_map.csv，未在正文重复列表。" if zh else
+                       "The evidence item and the strength claimed behind each "
+                       "contribution are recorded in contribution_map.csv rather than "
+                       "repeated as a table here.")
+            if not contrib:
+                out.append("材料没有成句的贡献陈述，这里只列出可用于写作的事实。" if zh else
+                           "The material has no sentence-level contribution claim, so "
+                           "only the usable facts are listed.")
+        elif role == "scope":
+            out.append("引文集合与数字集合都以材料为界，未引入外部检索结果。" if zh else
+                       "Both the citation set and the number set are bounded by the "
+                       "material; no external search result is introduced.")
+            out.append("写作层面的要求（段落数、字数、引用格式）属于交付约束，"
+                       "不属于本文对研究范围的声明。" if zh else
+                       "The presentation rules the brief lists - paragraph count, word "
+                       "floor, citation format - are delivery constraints, not claims "
+                       "about the scope of the study.")
+            if not constraints and not data_notes:
+                out.append("材料没有给出适用条件（体系、样品量、温度或数据来源），"
+                           "因此范围段只能声明不外推。" if zh else
+                           "The material states no applicability condition - no system, "
+                           "sample size, temperature or data source - so the scope "
+                           "paragraph can only say what is not extrapolated.")
+        return out
 
     def refs_line(limit: int = 8) -> str:
         if not refs:
             return ""
-        body = "; ".join(f"[R{r['n']}] {r['label']}" for r in refs[:limit])
+        body = "; ".join(f"[R{r['n']}] {r['label'].rstrip('.')}" for r in refs[:limit])
         return ("被引文献为：" if zh else "The cited works are ") + body + ("。" if zh else ".")
 
-    def pad(text: str, pool: List[str]) -> str:
-        """Reach the word floor with supplied material, not a repeated slogan."""
+    seen: set = set()
+
+    def mark(txt: str) -> None:
+        for s in sents(txt):
+            seen.add(re.sub(r"\s+", " ", s.lower())[:60])
+
+    def fresh(x: str, out: str) -> bool:
+        key = re.sub(r"\s+", " ", str(x).lower())[:60]
+        return bool(key) and key not in seen and str(x) not in out
+
+    def pad(role: str, text: str, pool: List[str], with_refs: bool = False) -> str:
+        """Reach the word floor with supplied material, never a repeated slogan."""
         out = str(text or "").strip()
-        for x in list(pool) + list(prov) + [refs_line()]:
+        mark(out)
+        extra = list(pool) + elab(role) + ([refs_line()] if with_refs else [])
+        for x in extra:
             if len(out.split()) >= 120:
                 break
-            x = str(x or "").strip()
-            if not x or x in out:
-                continue
-            out = (out + " " + x).strip()
+            if fresh(x, out):
+                out = (out + " " + str(x).strip()).strip()
+        mark(out)
         return out
 
     para_pool = {
         "context": rest + data_notes,
-        "prior_work": [p["gist"] for g in groups for p in g["items"] if p.get("gist")],
-        "gap": [l for _c, l in lim_pairs] + rest,
-        "contributions": rest + data_notes,
-        "scope": rest + list(facts),
+        "prior_work": [p["gist"] for g in groups for p in g["items"] if p.get("gist")] +
+                      [p["gist"] for p in flat if p.get("gist")],
+        "gap": rest,
+        "contributions": rest,
+        "scope": rest,
     }
+    seeds = {"context": context, "prior_work": prior, "gap": derived_gap,
+             "contributions": contributions_txt, "scope": scope}
     paras = [
-        {"role": "context", "text": pad(context, para_pool["context"]),
-         "must_use": "problem_statements", "citations": []},
-        {"role": "prior_work", "text": pad(prior, para_pool["prior_work"]),
-         "must_use": "related_work_groups", "citations": []},
-        {"role": "gap", "text": pad(derived_gap, para_pool["gap"]),
-         "must_use": "gap_statements", "citations": []},
-        {"role": "contributions", "text": pad(contributions_txt, para_pool["contributions"]),
-         "must_use": "contributions", "citations": []},
-        {"role": "scope", "text": pad(scope, para_pool["scope"]),
-         "must_use": "outline", "citations": []},
+        {"role": "context", "text": "", "must_use": "problem_statements", "citations": []},
+        {"role": "prior_work", "text": "", "must_use": "related_work_groups", "citations": []},
+        {"role": "gap", "text": "", "must_use": "gap_statements", "citations": []},
+        {"role": "contributions", "text": "", "must_use": "contributions", "citations": []},
+        {"role": "scope", "text": "", "must_use": "outline", "citations": []},
     ]
+    for p in paras:
+        p["text"] = pad(p["role"], seeds[p["role"]], para_pool[p["role"]],
+                        with_refs=(p["role"] == "scope"))
 
     contribution_items = [{"text": c["text"], "block": "", "page": 0,
                            "evidence_item": c["evidence_item"], "figure": "",
                            "claim_strength": strength.get(c["kind"], "")}
                           for c in contrib]
-    gap_items = [{"text": derived_gap, "derived": True, "block": "", "page": 0}]
+    gap_items = [{"text": derived_gap.strip(), "derived": True, "block": "", "page": 0}]
     payload = {
         "problem_statements": [{"text": x, "block": "", "page": 0} for x in problem] or
                               [{"text": context, "block": "", "page": 0}],
@@ -4348,7 +4477,7 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
         evidence.append({"anchor": "research_brief.md / related_works.md",
                          "quote": str(x)[:200],
                          "note": "research brief / related work fact"})
-    status = "complete" if (paras and (facts or groups)) else "partial"
+    status = "complete" if (paras and (facts or groups or flat)) else "partial"
     return payload, evidence, {"notes": ["intro built from supplied brief/related work; gap is derived"],
                                "missing": []}, status, ["brief intro with 5 paragraphs"]
 
