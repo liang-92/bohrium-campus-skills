@@ -1589,6 +1589,8 @@ def build_translate(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     for t in terms:
         t["zh"] = SEED_GLOSSARY.get(t["term"].lower(), "")
         if not t["zh"]:
+            t["zh"] = TRANSLATE_DOMAIN_TERMS.get(t["term"].lower(), "")
+        if not t["zh"]:
             for k, v in SEED_GLOSSARY.items():
                 if k in t["term"].lower():
                     t["zh"] = v
