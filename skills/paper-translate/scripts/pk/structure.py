@@ -1192,8 +1192,20 @@ def _ascii_mathy(text: str) -> bool:
     return ops / max(1, len(text)) >= 0.08
 
 
+REF_LINE = re.compile(
+    r"doi:[ ]*10[.]|"
+    r"^[0-9]{1,4}[ ]*[-–][ ]*[0-9]{1,4}[.]?$|"
+    r"(?:19|20)[0-9]{2}[ ]*[:;][ ]*[0-9]{1,4}[ ]*[-–][ ]*[0-9]{1,4}|"
+    r"\[[A-Z]\]//|//(?:ACL|NeurIPS|ICML|ICLR|NAACL|EMNLP|CVPR)", re.I)
+
+
 def _mathy(text: str) -> bool:
     if len(text) < 3 or len(text) > 400:
+        return False
+    # A reference entry is full of digits, slashes and dashes and clears every
+    # symbol-ratio test below: "1715-1725. doi:10.18653/v1/P16-1162" was shipped
+    # as equation (2) of a paper that has one equation.
+    if REF_LINE.search(text):
         return False
     strong = sum(1 for ch in text if ch in STRONG_MATH)
     weak = sum(1 for ch in text if ch in MATH_CHARS)
@@ -1223,6 +1235,13 @@ def find_formulas(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not cur:
             return
         text = " ".join(b["text"].strip() for b in cur).strip()
+        if REF_LINE.search(text):
+            # `EQ_LEAD` accepts a leading "1715-1725.", so a reference entry can
+            # clear the display-equation test.  Drop the group without touching
+            # the block's type: re-typing it as prose moved it into the heading
+            # detector and invented a section on page 1.
+            cur = []
+            return
         m = EQ_NUMBER.search(text)
         num = m.group(1) if m else ""
         if not num:

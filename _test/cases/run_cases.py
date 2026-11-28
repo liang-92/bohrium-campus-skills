@@ -240,6 +240,18 @@ def check(gold: dict, run: dict) -> list[tuple[str, bool, str]]:
     if "min_edges" in gold and slug == "paper-kg":
         edges = as_list(dig(oc, "edges")) or as_list(dig(pay, "edges"))
         add("图谱边数", len(edges) >= gold["min_edges"], f"{len(edges)} >= {gold['min_edges']}")
+        # A count alone can be met by padding: table cells became "has value"
+        # edges and pushed this paper from 3 to 23.  Check what the edges *are*.
+        allowed = {r.lower() for r in gold.get("edge_relations") or []}
+        if allowed:
+            bad = sorted({str(e.get("relation") or e.get("predicate") or "").lower()
+                          for e in edges} - allowed)
+            add("关系类型合规", not bad, f"unexpected={bad[:4]}")
+        if gold.get("edge_must_have_quote"):
+            noq = [e for e in edges
+                   if not str(e.get("quote") or "").strip()
+                   or not str(e.get("anchor") or "").strip()]
+            add("边有锚点与原句", not noq, f"{len(noq)} edges lack quote/anchor")
 
     if "draft_paragraphs" in gold:
         draft = dig(oc, "draft") or dig(pay, "draft") or {}

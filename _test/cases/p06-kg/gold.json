@@ -1,8 +1,31 @@
 {
-  "kg_must_have": [
-    "fairseq",
-    "WMT 2014",
-    "BLEU"
-  ],
-  "min_edges": 10
+ "kg_must_have": [
+  "fairseq",
+  "WMT 2014",
+  "BLEU"
+ ],
+ "min_edges": 3,
+ "edge_relations": [
+  "uses",
+  "trained on",
+  "evaluated on",
+  "outperforms",
+  "depends on",
+  "bounded by",
+  "defined as",
+  "increases",
+  "decreases",
+  "reaches",
+  "shows",
+  "remains",
+  "dominates",
+  "controls",
+  "detected on",
+  "reports",
+  "co occurs with",
+  "mentions",
+  "does not control",
+  "evaluated on"
+ ],
+ "edge_must_have_quote": true
 }

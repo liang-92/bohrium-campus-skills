@@ -811,13 +811,25 @@ def _index_md(ctx: Ctx) -> str:
 def _nanopubs(ctx: Ctx) -> str:
     p = ctx.payload or {}
     if p.get("nanopubs"):
-        return json_text({"nanopubs": p["nanopubs"], "count": len(p["nanopubs"])})
+        # `assertions` is the flat claim list; some contracts ask for it by
+        # name, and a reader should not have to unwrap every nanopublication
+        # to get the sentences the file is about.
+        flat = [{"id": n.get("id"), "assertion": n.get("assertion"), "type": n.get("type"),
+                 "confidence": n.get("confidence"), "flags": n.get("flags") or []}
+                for n in p["nanopubs"]]
+        return json_text({"nanopubs": p["nanopubs"], "assertions": flat,
+                          "count": len(p["nanopubs"])})
     srcs = ((p.get("provenance") or {}).get("sources") or [])
     src_by_id = {str(s.get("paper_id")): s for s in srcs}
     nanopubs = []
+    flat: List[Dict[str, Any]] = []
     for i, a in enumerate(p.get("assertions") or [], 1):
         ev = a.get("evidence") or {}
         quote = ev.get("quote") or a.get("assertion") or ""
+        flat.append({"id": a.get("id") or f"a{i:03d}", "assertion": str(a.get("assertion") or ""),
+                     "type": a.get("type"), "conditions": a.get("conditions") or [],
+                     "evidence": ev, "confidence": a.get("confidence") or "high",
+                     "flags": a.get("flags") or []})
         if not srcs:
             # Paper-claim case: a nanopublication is assertion + provenance +
             # publication info.  There is no source record to point at, so the
@@ -870,9 +882,9 @@ def _nanopubs(ctx: Ctx) -> str:
             },
             "confidence": a.get("confidence") or "high",
         })
-    # The schema's top-level key is `nanopubs`, not `assertions`; the latter is
-    # only the internal claim list.
-    return json_text({"nanopubs": nanopubs, "count": len(nanopubs)})
+    # `nanopubs` is the schema's top-level key; `assertions` is the flat view of
+    # the same claims, kept because contracts name either one.
+    return json_text({"nanopubs": nanopubs, "assertions": flat, "count": len(nanopubs)})
 
 
 def _decomposition(ctx: Ctx) -> str:
@@ -2683,7 +2695,7 @@ def _ref_author_year(r: Dict[str, Any]) -> tuple:
     return fam, y
 
 
-def _cite_match(sentence: str, refs: List[Dict[str, Any]]) -> List[int]:
+def _cite_match(sentence: str, refs: List[Dict[str, Any]], limit: int = 2) -> List[int]:
     """Reference numbers whose title shares a content term with this sentence.
 
     The old fixed AI/DFT rules could only cite four landmark papers; a
@@ -2732,6 +2744,12 @@ def _cite_match(sentence: str, refs: List[Dict[str, Any]]) -> List[int]:
                 weight *= 2
                 where = min(where, hit.start())
             score += weight
+        # A named database or tool in capitals ("BRENDA", "KEGG") is the
+        # strongest pointer a sentence can carry: prose words like "curated"
+        # are shared by many titles and used to outrank the actual source.
+        caps = {c.lower() for c in re.findall(r"\b[A-Z]{3,}\b", sentence)}
+        if caps & rt:
+            score += 5.0
         if score >= 3:
             n = int(r.get("n") or r.get("index") or 0)
             if n:
@@ -2739,7 +2757,7 @@ def _cite_match(sentence: str, refs: List[Dict[str, Any]]) -> List[int]:
     if not scored:
         return []
     scored.sort(key=lambda x: (-x[0], x[1]))
-    return [n for _s, _w, n in scored[:2]]
+    return [n for _s, _w, n in scored[:limit]]
 
 
 def _cite_theme(sentence: str, refs: List[Dict[str, Any]]) -> List[int]:
@@ -2843,10 +2861,32 @@ def _manuscript_cited(ctx: Ctx) -> str:
                     continue
                 hits = [n for n in _cite_theme(s, refs) if not numbers or n in numbers]
                 if not hits:
-                    # A sentence outside the explicit themes still gets at most
-                    # one conservative title-overlap citation, never two.
-                    hits = [n for n in _cite_match(s, refs) if not numbers or n in numbers][:1]
+                    # A sentence outside the explicit themes still gets its
+                    # title-overlap matches, uncited records first so one
+                    # sentence does not keep citing the same source.  (Sort a
+                    # copy of the ranking: calling list.index inside a sort of
+                    # the same list raises "not in list".)
+                    cand = [n for n in _cite_match(s, refs, 6) if not numbers or n in numbers]
+                    ranked = sorted(enumerate(cand),
+                                    key=lambda p: (p[1] in mapping, p[0]))
+                    picked: List[int] = []
+                    seen_src = set()
+                    for _i, n in ranked:
+                        r = refs_by_old.get(n) or {}
+                        fam = (str(r.get("authors") or "").split(",")[0] or "").strip().lower()
+                        # Two release notes of the same database are one source
+                        # for citation purposes; the second slot is worth more
+                        # to a different reference (KEGG next to BRENDA).
+                        key_src = fam or re.sub(r"[^a-z]", "", str(r.get("title") or "").lower()[:20])
+                        if key_src and key_src in seen_src:
+                            continue
+                        seen_src.add(key_src)
+                        picked.append(n)
+                        if len(picked) >= 2:
+                            break
+                    hits = picked
                 hits = list(dict.fromkeys(hits))
+                hits = sorted(hits)
                 if not hits:
                     out_s.append(s)
                     continue
@@ -2994,33 +3034,61 @@ def _citation_placement(ctx: Ctx) -> str:
         rows = [["sentence_id", "sentence", "inserted_ref", "reason", "rejected_refs"]]
         used = set()
         sid = 0
+        refs = _refs_list(ctx)
+        by_n = {int(r.get("n") or r.get("index") or 0): r for r in refs}
+
+        def _terms(s: str) -> set:
+            return {w.lower() for w in re.findall(r"[A-Za-z]{4,}", s or "")
+                    if w.lower() not in {"this", "that", "with", "from", "their", "these",
+                                         "those", "have", "were", "was", "which", "study",
+                                         "paper", "using", "used", "into", "than", "then",
+                                         "also", "such", "more", "most", "between"}}
 
         def reason_for(sentence: str, ref: str) -> str:
-            low = sentence.lower()
-            if "descriptor-based" in low:
-                return "Behler–Parrinello 2007 提出基于对称函数的原子环境描述符，直接支撑 descriptor-based 表述。"
-            if "deep potential" in low:
-                return "Zhang 等 2018 提出 Deep Potential，直接支撑 deep potential 与大尺度 MD。"
-            if "sequence modeling" in low:
-                return "Vaswani 等 2017 的 Transformer 是 sequence modeling 的原始来源。"
-            if "language models" in low:
-                return "Devlin 等 2019 的 BERT 是 scientific language model 的代表来源。"
-            if "protein structure" in low:
-                return "Jumper 等 2021 的 AlphaFold 直接支撑 protein structure prediction 精度。"
-            if "exchange-correlation" in low:
-                return "Perdew 等 1996 的 PBE 直接支撑 exchange-correlation approximation。"
-            if "density functional theory" in low:
-                return "Hohenberg–Kohn 1964 是 DFT 理论基础，不挂 Kohn–Sham 干扰项。"
-            return "该句是机器学习势的整体背景，挂 Behler–Parrinello 2007 的综述性起点。"
+            """Why this reference answers this sentence, from the text itself.
 
-        def emit(sentence: str, ref: str) -> None:
+            The previous table was a fixed list of eight landmark papers; on any
+            other manuscript every row said "the overall background of ML
+            potentials", which is not a reason a reviewer can check.
+            """
+            try:
+                n = int(str(ref).strip("[]"))
+            except ValueError:
+                return "编号无法解析"
+            r = by_n.get(n) or {}
+            shared = sorted(_terms(sentence) & _terms(str(r.get("text") or r.get("raw") or "")))
+            fam, year = _ref_author_year(r)
+            title = str(r.get("title") or "").strip()
+            head = " ".join(title.split()[:7]) or (fam or "")
+            cited_by_name = bool(fam and year and re.search(
+                rf"\b{re.escape(fam)}\b(?:\s+et al\.)?[^.]{{0,12}}{year}", sentence, re.I))
+            if shared:
+                return (f"该句与「{head}」的标题词重合：{', '.join(shared[:5])}"
+                        + (f"；{fam} {year}" if fam and year else ""))
+            if cited_by_name:
+                return f"正文以作者—年形式指称 {fam} {year}，条目与之对应"
+            return f"该句无共同实词，按候选相关度排到「{head}」，需人工复核"
+
+        def rejected_for(sentence: str, used_nums: List[str]) -> str:
+            cand = [n for n in _cite_match(sentence, refs)
+                    if str(n) not in {x.strip() for x in ",".join(used_nums).split(",")}]
+            if not cand:
+                return "无（同句没有其他候选条目）"
+            out = []
+            for n in cand[:3]:
+                r = by_n.get(n) or {}
+                head = " ".join(str(r.get("title") or r.get("text") or "").split()[:6])
+                out.append(f"[{n}] {head}（同句候选但相关度较低）")
+            return "; ".join(out)
+
+        def emit(sentence: str, ref: str) -> int:
             nonlocal sid
             sid += 1
             rows.append([f"S{sid:02d}", re.sub(r"\[[0-9,]+\]", "", sentence).strip(),
-                         f"[{ref}]",
-                         reason_for(sentence, ref),
-                         "[5] Kohn–Sham 1965（干扰项，不用于所引论断）"])
+                         f"[{ref}]", reason_for(sentence, ref), ""])
+            return len(rows) - 1
 
+        pending: List[tuple] = []
         for line in body.splitlines():
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
@@ -3032,24 +3100,13 @@ def _citation_placement(ctx: Ctx) -> str:
                     continue
                 inserted = nums[-1]
                 used.update(int(x) for x in inserted.split(","))
-                # C01 has seven atomic claims.  Two sentences deliberately
-                # combine a pair of claims; split them in the placement audit
-                # without altering the manuscript's compact [3,4]/[6,7] form.
-                if "transformer architectures" in s.lower() and "language models" in s.lower() \
-                        and "," in inserted:
-                    emit("Transformer architectures, originally developed for sequence modeling.",
-                         inserted.split(",")[0])
-                    emit("Transformer architectures now underpin many scientific language models.",
-                         inserted.split(",")[-1])
-                    continue
-                if "density functional theory" in s.lower() and "exchange-correlation" in s.lower() \
-                        and "," in inserted:
-                    emit("Density functional theory remains the reference method for the training data.",
-                         inserted.split(",")[0])
-                    emit("Its exchange-correlation approximation determines the systematic error of the labels.",
-                         inserted.split(",")[-1])
-                    continue
-                emit(s, inserted)
+                # `[3,4]` is one claim with two supporting references, not two
+                # claims: splitting the sentence at "and" produced half-sentence
+                # rows that no longer existed in the manuscript.
+                pending.append((emit(s, inserted), s, inserted))
+        # Fill the rejected column now that every inserted number is known.
+        for idx, s, inserted in pending:
+            rows[idx][4] = rejected_for(s, [inserted])
         return csv_text(rows)
     rows = [["sentence_id", "section", "sentence", "references", "rationale"]]
     sid = 0

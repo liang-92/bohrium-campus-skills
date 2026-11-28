@@ -387,7 +387,12 @@ def _bag(payload: Dict[str, Any], doc: Dict[str, Any],
     meta = d.get("meta") or {}
     content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
     body_blocks = content.get("blocks")
-    if not body_blocks:
+    # A composer that moved the text out of `blocks` (OCR-only scan: the
+    # characters are a transcription, not the document's own text) is saying
+    # "no body was parsed".  Refilling from d["blocks"] here would undo that
+    # and claim the body after all.
+    withheld = bool(content.get("body_withheld") or content.get("ocr_blocks"))
+    if not body_blocks and not withheld:
         body_blocks = [{"id": b.get("id"), "page": b.get("page"),
                         "column": b.get("column"),
                         "section": b.get("section_path") or b.get("section"),
@@ -628,8 +633,22 @@ def adapt(payload: Dict[str, Any], fields: List[Field] | List[str],
     # The routing (method) is still informative, but the confidence must not
     # read as "we checked and the paper really has no figures".
     no_doc = not (doc or {}).get("document")
+    _content = (payload or {}).get("content")
+    withheld = bool(_content.get("body_withheld")) if isinstance(_content, dict) else False
 
     for f in fields:
+        key_last = f.name.replace("output_contract.", "").split(".")[-1].lower()
+        # An OCR-only scan has text, but not the document's own text.  The
+        # composer withheld `blocks` on purpose; answering with an
+        # "unsupported field" record would read as a tool failure.
+        if withheld and key_last in {"blocks", "content_blocks", "block_list"}:
+            body[f.name] = []
+            status_map[f.name] = {
+                "method": "withheld:no-text-layer", "confidence": 1.0,
+                "declared_type": f.kind, "empty": True,
+                "why_empty": "文字层为空；OCR 转录保存在 content.ocr_blocks，未计入正文"}
+            used.append(f.name)
+            continue
         r = resolve(f, bag, payload or {})
         # `status` is special: the contract wants the run state, and `None`
         # would read as "nobody filled it".

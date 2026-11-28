@@ -499,6 +499,12 @@ def is_heading(block: Dict[str, Any], body_size: float) -> bool:
     text = block["text"].strip()
     if block.get("type") in {"table", "reference", "formula"}:
         return False
+    # A reference entry is short, often starts with a number and carries no
+    # sentence punctuation, so it clears the "numbered" test and became a
+    # section ("14 The").  Venue and DOI marks are decisive.
+    if re.search(r"doi:[ ]*10[.]|//(?:ACL|NeurIPS|ICML|ICLR|NAACL|EMNLP|CVPR)|"
+                 r"^[0-9]{1,4}[ ]*[-–][ ]*[0-9]{1,4}[.]?$", text, re.I):
+        return False
     if not text or len(text) > 140:
         return False
     if block["lines"] > 3:

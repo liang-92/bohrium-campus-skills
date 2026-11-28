@@ -580,6 +580,7 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     ocr_only = (not d["source"].get("has_text_layer")) and bool(d["blocks"])
     if ocr_only:
         payload["content"]["ocr_blocks"] = payload["content"].pop("blocks")
+        payload["content"]["body_withheld"] = True
         payload["content"]["ocr_note"] = (
             "文字层为空：以上 ocr_blocks 是 OCR 转录，未计入正文，字符级需对照原件校对；"
             "如需正文级引用，请安装高质量 OCR 引擎或人工转录")
@@ -3185,6 +3186,7 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     # column header is the metric, the cell is the value: this is the one place
     # a paper states a number without a sentence, and the table itself is the
     # anchor (`t01`), so the edge is checkable without trusting the prose.
+    table_facts: List[Dict[str, Any]] = []
     metric_vocab = re.compile(
         r"^(?:bleu|rouge(?:-[lw])?|meteor|perplexity|accuracy|precision|recall|f1|"
         r"auc|map|iou|mae|mse|rmse|wer|cer|score|speed|params?|latency|"
@@ -3223,11 +3225,17 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 if not mid or sid == mid:
                     continue
                 quote = f"{header[0]}={subj}; {hdr}={val}"
-                edges.append({
-                    "source": subj, "target": hdr, "relation": "has value",
-                    "source_id": sid, "target_id": mid, "paper_id": "P1",
-                    "anchor": tid, "quote": quote,
-                    "condition": f"{tid} · {hdr}",
+                # These are table *facts*, not graph relations.  The task asks
+                # for uses / trained on / evaluated on / outperforms, and a cell
+                # is not one of them: pushing "has value" into `edges` inflated
+                # the edge count until a paper with three real relations passed
+                # the density gate.  They ship as their own slice, anchored at
+                # the table (`t01`), which is what a reader can open and check.
+                table_facts.append({
+                    "subject": subj, "metric": hdr, "value": val,
+                    "table": tid, "page": t.get("page"),
+                    "quote": quote,
+                    "subject_id": sid, "metric_id": mid,
                 })
         # The prose anchor for a table edge is the caption block: its text is
         # what a reader can open and check, while `anchor: t01` is the structural
@@ -3325,7 +3333,9 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         "queries": queries,
         "exports": {"json": "nodes/edges above", "cypher":
                     "\n".join(f"MERGE (:{n['type']} {{name:'{n['label']}'}})" for n in good_nodes[:80])},
-        "stats": {"nodes": len(good_nodes), "edges": len(good_edges)},
+        "stats": {"nodes": len(good_nodes), "edges": len(good_edges),
+                  "table_facts": len(table_facts)},
+        "table_facts": table_facts,
     }
     if aligned:
         payload["clusters"] = aligned.get("clusters") or []
@@ -4722,9 +4732,21 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 own = re.split(r"[,;，；]", tail, maxsplit=1)[0]
                 name = m.group(1).lower()
                 sci, sci_raw = _sci_decimal(own)
-                val = re.search(r"(\d+(?:\.\d+)?\s*" + UNIT + r"?|true|false|adam\w*|sgd|relu|gelu)",
-                                tail, re.I) or \
-                    re.search(r"(\d+(?:\.\d+)?)", seg, re.I)
+                # English puts the number on either side of the noun: "8 attention
+                # heads and 6 layers" has heads' value *before* the name, and
+                # reading forward gave heads=6 and layers=512 (the embedding
+                # size).  Prefer a number in the same clause right before the
+                # name; fall back to the forward scan.
+                pre = s[:m.start()]
+                cut = max(pre.rfind(","), pre.rfind(";"), pre.rfind("，"), pre.rfind("；"))
+                clause = pre[cut + 1:]
+                before = re.search(r"(\d+(?:\.\d+)?)\s+(?:[A-Za-z][\w+-]*\s+){0,3}$", clause)
+                val = None
+                if before and not re.search(r"\d", clause[before.end():]):
+                    val = before
+                val = val or re.search(
+                    r"(\d+(?:\.\d+)?\s*" + UNIT + r"?|true|false|adam\w*|sgd|relu|gelu)",
+                    tail, re.I) or re.search(r"(\d+(?:\.\d+)?)", seg, re.I)
                 value = val.group(1).strip() if val else ""
                 entry = {"name": name, "value": value, "context": seg[:120],
                          "block": b["id"], "page": b["page"]}
@@ -5166,14 +5188,7 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
         # minimal, complete document from the parsed blocks instead of leaving
         # a 0-byte file that merely satisfies `required_files`.
         os.makedirs(proj, exist_ok=True)
-        body = "\n\n".join(b.get("text", "") for b in d.get("blocks", [])
-                           if b.get("type") == "body" and b.get("text"))
-        body = body.replace("%", "\\%").replace("{", "\\{").replace("}", "\\}")
-        src = ("\\documentclass[11pt]{article}\n"
-               "\\usepackage{amsmath}\n\\usepackage{hyperref}\n"
-               "\\title{" + (d.get("meta", {}).get("title") or "Manuscript") + "}\n"
-               "\\author{}\n\\date{}\n\\begin{document}\n\\maketitle\n\n"
-               + body + "\n\n\\end{document}\n")
+        src = _tex_from_doc(d)
         fixes.append({"issue": "input/project had no usable main.tex",
                       "file": "main.tex", "line": 1,
                       "root_cause": "no source document to repair",
@@ -5192,15 +5207,20 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
         static_problems.append("missing \\begin{document}")
     if "\\maketitle" not in src:
         static_problems.append("missing \\maketitle")
-    # A placeholder keeps the document printable but the figure is still absent;
-    # saying "ok" here would hide a real gap in the input material.
+    # A placeholder keeps the document printable but the figure is still absent.
+    # Record it as a warning: the deliverable no longer points at a missing
+    # file, so it is a gap in the input, not a defect of this output, and it is
+    # already listed in the fix report and in uncertainty.missing.
     missing_figs = [f.get("problem", "") for f in fixes if "图片文件不存在" in (f.get("problem") or "")]
-    static_problems += missing_figs[:6]
+    still_missing = [m for m in re.findall(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", src)
+                     if proj and not os.path.exists(os.path.join(proj, m.strip()))]
+    static_problems += [f"引用的图片文件不存在：{m}" for m in still_missing[:6]]
 
     compile_info: Dict[str, Any] = {"attempted": False, "passes": 0,
                                     "command": "pdflatex → bibtex → pdflatex ×2",
                                     "static_check": {"ok": not static_problems,
-                                                     "problems": static_problems[:10]}}
+                                                     "problems": static_problems[:10],
+                                                     "warnings": missing_figs[:6]}}
     log_parts = [f"% cwd: {proj or '(no project)'}",
                  "% toolchain: TeX Live 2023, pdflatex + bibtex, "
                  "pdflatex → bibtex → pdflatex ×2"]
@@ -5212,8 +5232,14 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
     if engine and os.path.basename(engine).lower().startswith("xelatex"):
         compile_info["command"] = "xelatex → bibtex → xelatex ×2"
         log_parts[1] = "% toolchain: xelatex + bibtex, xelatex → bibtex → xelatex ×2"
+    # "本机无 TeX 引擎，必须如实写 compile.attempted: false" is an instruction
+    # about what to claim, and the brief wins: compiling anyway and reporting
+    # `attempted: true` contradicts the deliverable the case asked for.  The
+    # engine that *is* present is still named, so a reader knows how to rerun.
+    brief_no_tex = bool(re.search(r"无\s*TeX|没有\s*TeX|no\s+TeX|不得编译|不要编译|"
+                                   r"compile\.attempted\s*[:：]\s*false", task or "", re.I))
     if proj and os.path.isdir(proj) and src:
-        if engine and tex_compile_allowed():
+        if engine and tex_compile_allowed() and not brief_no_tex:
             compile_info["attempted"] = True
             compile_info["engine"] = os.path.basename(engine)
             env = dict(os.environ, TEXINPUTS=".:" + os.environ.get("TEXINPUTS", ""))
@@ -5247,8 +5273,13 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
                                  "pdf": os.path.exists(os.path.join(proj, "main.pdf"))})
         else:
             compile_info["ok"] = False
-            why = ("no TeX engine on this machine" if not engine
-                   else "a TeX engine exists but compilation is off by policy")
+            if brief_no_tex:
+                why = ("任务说明本机无 TeX 引擎并要求 attempted=false；按要求未编译"
+                       + (f"（实测存在 {os.path.basename(engine)}，可用 xelatex + ctex 复现）"
+                          if engine else ""))
+            else:
+                why = ("no TeX engine on this machine" if not engine
+                       else "a TeX engine exists but compilation is off by policy")
             compile_info["errors"] = [why + "; static check only"]
             log_parts.append("% " + why + ": compilation not attempted")
     else:
@@ -5430,6 +5461,145 @@ def _balance_envs(src: str, fname: str, fix) -> str:
             "环境只开不闭，编译到文末报 \\end{document} 不匹配",
             f"在正文末尾补 \\end{{{env}}}")
     return src
+
+
+def _tex_escape(text: str) -> str:
+    """Escape prose for LaTeX without touching anything that looks like math."""
+    t = str(text or "")
+    t = t.replace("\\", r"\textbackslash{}")
+    for a, b in (("&", r"\&"), ("%", r"\%"), ("$", r"\$"), ("#", r"\#"),
+                 ("_", r"\_"), ("{", r"\{"), ("}", r"\}"),
+                 ("~", r"\textasciitilde{}"), ("^", r"\textasciicircum{}")):
+        t = t.replace(a, b)
+    return t
+
+
+def _tex_from_doc(d: Dict[str, Any]) -> str:
+    """A complete, compilable article built from the parsed document.
+
+    The old fallback dropped every block into one flat paragraph: no
+    `\\section`, no `equation`, no `tabular`, no `\\cite`.  A LaTeX deliverable
+    without those is not a repaired manuscript -- it compiles and says nothing
+    about the structure the task asked to preserve.  Sections, numbered
+    equations, tables and the reference list are rebuilt from the same parsed
+    objects the other profiles use, each escaped once.
+    """
+    meta = d.get("meta") or {}
+    title = _tex_escape(meta.get("title") or "Manuscript")
+    authors = ", ".join(_tex_escape(a) for a in (meta.get("authors") or [])[:12])
+    out = ["\\documentclass[11pt]{article}",
+           "\\usepackage{amsmath}", "\\usepackage{booktabs}", "\\usepackage{hyperref}",
+           "\\usepackage[margin=1in]{geometry}",
+           "\\title{" + title + "}",
+           "\\author{" + (authors or "") + "}", "\\date{}",
+           "\\begin{document}", "\\maketitle", ""]
+    abstract = str(meta.get("abstract") or "").strip()
+    if abstract:
+        out += ["\\begin{abstract}", _tex_escape(abstract), "\\end{abstract}", ""]
+
+    # Numbers that the body cites: [1] -> \cite{ref1}.  Done before escaping so
+    # the marker is matched in the raw text.
+    refs = d.get("references") or []
+    ref_keys = {}
+    for i, r in enumerate(refs, 1):
+        num = str(r.get("n") or i).strip()
+        ref_keys[num] = f"ref{num}"
+
+    def cite(text: str) -> str:
+        def repl(m):
+            keys = [ref_keys.get(k.strip(), "") for k in m.group(1).split(",")]
+            keys = [k for k in keys if k]
+            return "~\\cite{" + ",".join(keys) + "}" if keys else m.group(0)
+        return re.sub(r"\[(\d+(?:\s*,\s*\d+)*)\]", repl, text)
+
+    # The front matter arrives as heading blocks too: the title is often split
+    # over two lines ("… Neural Machine" + "Translation"), followed by authors,
+    # Abstract and Keywords.  None of these is a section, and emitting them
+    # produced "\section{Translation}" above "\section{Introduction}".
+    title_l = title.lower().strip()
+    skip_sections = {"abstract", "references", "bibliography", "keywords"}
+
+    def front_matter(sec: str) -> bool:
+        sl = re.sub(r"^\d+(?:\.\d+)*\s*", "", sec.lower()).strip()
+        return (not sl or sl in skip_sections
+                or (title_l and (sl in title_l or title_l.startswith(sl)
+                                 or sl.startswith(title_l[:24]))))
+
+    current = ""
+    for b in d.get("blocks") or []:
+        if b.get("type") not in ("body", "heading", "formula", "table"):
+            continue
+        sec = str(b.get("section") or "").strip()
+        fm = front_matter(sec)
+        if sec and sec != current and not fm:
+            out += ["\\section{" + _tex_escape(re.sub(r"^\d+(?:\.\d+)*\s*", "", sec)) + "}"]
+            current = sec
+        elif fm:
+            current = current or sec
+        txt = str(b.get("text") or "").strip()
+        if not txt:
+            continue
+        # Table cells and captions are rebuilt from `d["tables"]` below; spilling
+        # them into the body produced a paragraph of "Model BLEU Params ..."
+        # followed by the same numbers in a tabular.
+        if b.get("type") == "table" or re.match(r"^(?:Table|Figure)\s+\d+[:.]", txt):
+            continue
+        # A heading block repeats the section title that was just emitted.
+        if b.get("type") == "heading":
+            bare = re.sub(r"^\d+(?:\.\d+)*\s*", "", txt).strip().lower()
+            if bare == re.sub(r"^\d+(?:\.\d+)*\s*", "", sec).strip().lower() or fm:
+                continue
+        if fm and b.get("type") != "heading":
+            continue
+        # Equations are emitted from `d["formulas"]` below, which is the list
+        # that carries the TeX form; a block only has the printed line.
+        if b.get("type") == "formula":
+            continue
+        out += [cite(_tex_escape(txt)), ""]
+
+    # Formulas are a document-level list, not blocks: the block text carries the
+    # printed line ("(1) L = ..."), the TeX form lives in `d["formulas"]`.
+    emitted_eq = set()
+    for f in d.get("formulas") or []:
+        num = str(f.get("number") or "").strip()
+        tex = str(f.get("tex") or "").strip()
+        plain = str(f.get("text") or "").strip()
+        if not (tex or plain) or num in emitted_eq:
+            continue
+        emitted_eq.add(num)
+        label = "\\label{eq:" + (num or str(len(emitted_eq))) + "}" if num else ""
+        out += ["\\begin{equation}" + label,
+                tex or re.sub(r"^\(?\d+\)?\s*", "", plain),
+                "\\end{equation}", ""]
+
+    for ti, t in enumerate(d.get("tables") or [], 1):
+        header = [str(h) for h in (t.get("header") or [])]
+        rows = [r for r in (t.get("rows") or []) if isinstance(r, (list, tuple))]
+        if not header or not rows:
+            continue
+        ncol = max([len(header)] + [len(r) for r in rows])
+        out += ["\\begin{table}[htbp]", "\\centering",
+                "\\begin{tabular}{" + "l" + "r" * (ncol - 1) + "}",
+                "\\toprule",
+                " & ".join(_tex_escape(h) for h in header) + " \\\\",
+                "\\midrule"]
+        for r in rows[:20]:
+            cells = [_tex_escape(c) for c in list(r)[:ncol]]
+            cells += [""] * (ncol - len(cells))
+            out.append(" & ".join(cells) + " \\\\")
+        cap = _tex_escape(t.get("caption") or f"Table {ti}")
+        out += ["\\bottomrule", "\\end{tabular}",
+                "\\caption{" + cap + "}", "\\end{table}", ""]
+
+    if refs:
+        out.append("\\begin{thebibliography}{99}")
+        for i, r in enumerate(refs, 1):
+            num = str(r.get("n") or i).strip()
+            text = str(r.get("text") or "").strip()
+            out.append("\\bibitem{ref" + num + "} " + _tex_escape(text))
+        out += ["\\end{thebibliography}", ""]
+    out.append("\\end{document}")
+    return "\n".join(out) + "\n"
 
 
 def _repair_tex(src: str, proj: str, notes_text: str, fixes: List[Dict[str, Any]],

@@ -91,10 +91,14 @@ def main_result(profile: str, doc: Dict[str, Any], payload: Dict[str, Any],
     p = payload or {}
 
     if profile == "parse":
+        # `block_count` is the body the skill stands behind.  On an OCR-only
+        # scan the composer withholds it, so the count must not read 13.
+        _pc = p.get("content") if isinstance(p.get("content"), dict) else {}
+        withheld = bool(_pc.get("body_withheld"))
         return {**base, "sections": _structure(d), "tables": _tables(d),
                 "formulas": _formulas(d), "references": _refs(d),
                 "ocr_pages": (d.get("source") or {}).get("ocr_pages") or [],
-                "block_count": len(d.get("blocks", [])),
+                "block_count": 0 if withheld else len(d.get("blocks", [])),
                 "counts": {"sections": len(d.get("sections", [])),
                            "tables": len(d.get("tables", [])),
                            "formulas": len(d.get("formulas", [])),
