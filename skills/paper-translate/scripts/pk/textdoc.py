@@ -348,7 +348,7 @@ def analyze_text(root: str, man: Dict[str, Any], case: Dict[str, Any],
                          "page": 1, "block": b.get("id", ""),
                          "authors": e["authors"], "title": e["title"], "year": e["year"],
                          "venue": e["venue"], "volume": e["volume"], "pages": e["pages"],
-                         "doi": e["doi"]})
+                         "doi": e["doi"], "bib_type": e["type"]})
     for raw in refs_md:
         for e in _numbered_refs(raw):
             b = doc.add(e["text"], "reference")

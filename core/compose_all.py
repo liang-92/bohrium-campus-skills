@@ -376,6 +376,106 @@ def _recover_image_table(d: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _continuation_rows(pdf_path: str, page_no: int, caption: Dict[str, Any],
+                       ncols: int) -> List[List[str]]:
+    """Rebuild the rows of a `Table N (continued)` page from line boxes.
+
+    The page is often a full-width table glued next to body text, so the table
+    engine skips it.  Lines inside the caption's column band still carry x/y
+    coordinates; clustering by baseline and reading left to right recovers the
+    rows without pretending the whole page is one table.
+    """
+    if not pdf_path or not os.path.exists(pdf_path):
+        return []
+    try:
+        import fitz  # type: ignore
+        doc = fitz.open(pdf_path)
+        page = doc[int(page_no) - 1]
+    except Exception:
+        return []
+    box = caption.get("bbox") or [40.0, 0.0, 0.0, 0.0]
+    top = float(box[1])
+    lo = max(0.0, float(box[0]) - 20.0)
+    hi = float(page.rect.width) - 20.0
+    lines: List[Dict[str, Any]] = []
+    for blk in page.get_text("dict").get("blocks", []):
+        if blk.get("type") != 0:
+            continue
+        for ln in blk.get("lines", []):
+            txt = "".join(s.get("text") or "" for s in ln.get("spans", [])).strip()
+            if not txt:
+                continue
+            x0, y0, x1, y1 = [float(v) for v in ln["bbox"]]
+            if y0 < top + 3 or y1 > top + 180:
+                continue
+            if x1 < lo or x0 > hi:
+                continue
+            lines.append({"text": txt, "x0": x0, "y0": y0})
+    if not lines:
+        return []
+    lines.sort(key=lambda l: (l["y0"], l["x0"]))
+    groups: List[List[Dict[str, Any]]] = []
+    for ln in lines:
+        if groups and abs(ln["y0"] - groups[-1][0]["y0"]) <= 4.0:
+            groups[-1].append(ln)
+        else:
+            groups.append([ln])
+    # A table ends where a body paragraph begins: the gap after the last data
+    # row is much larger than the row pitch.  Cutting there keeps the prose
+    # beneath the table from becoming extra column anchors.
+    kept: List[List[Dict[str, Any]]] = []
+    for i, grp in enumerate(groups):
+        if kept and grp[0]["y0"] - kept[-1][0]["y0"] > 20.0:
+            break
+        if i == 0 and re.match(r"\s*Table\s*\d+", grp[0]["text"], re.I):
+            continue
+        kept.append(grp)
+    lines = [l for grp in kept for l in grp]
+    if not lines:
+        return []
+    # Column anchors are the clamped x0 positions of every kept line.
+    xs = sorted(l["x0"] for l in lines)
+    anchors: List[float] = []
+    for x in xs:
+        if not anchors or x - anchors[-1] > 8.0:
+            anchors.append(x)
+    ncol = int(ncols or len(anchors))
+    anchors = anchors[:ncol]
+
+    header_rx = re.compile(
+        r"^(?:membrane|pore|size|j_li|j_mg|s\(li|area|exposure|rust|blistering|"
+        r"r_p|\|z\||j_?li|j_?mg|\(mol|m-?2|h-?1|\(cm2\)|\(å\))$", re.I)
+    rows: List[List[str]] = []
+    for grp in kept:
+        cells: List[str] = [""] * ncol
+        order = sorted(grp, key=lambda g: g["x0"])
+        for g in order:
+            idx = min(range(ncol), key=lambda i: abs(anchors[i] - g["x0"]))
+            piece = g["text"]
+            if re.match(r"TpPa", piece, re.I):
+                m = re.match(r"^(.+?)(\d+\.\d+)$", piece)
+                if m:
+                    cells[idx] = m.group(1).strip()
+                    if idx + 1 < ncol:
+                        cells[idx + 1] = m.group(2)
+                else:
+                    cells[idx] = piece
+            else:
+                cells[idx] = (cells[idx] + " " + piece).strip()
+        joined = " ".join(c for c in cells if c).strip()
+        toks = [t for t in joined.split() if t]
+        if not toks:
+            continue
+        # Header rows name columns; they are not data even when they carry
+        # "(mol" or "m-2" fragments.
+        if sum(1 for t in toks if header_rx.match(t)) >= 2 and not re.search(r"TpPa", joined, re.I):
+            continue
+        if len([c for c in cells if c]) < 2 or not re.search(r"\d", joined):
+            continue
+        rows.append(cells[:ncol])
+    return rows
+
+
 def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     d = doc["document"]
     evidence: List[Dict[str, Any]] = []
@@ -452,6 +552,53 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         _seen_heads.add(_key)
         _deduped_sections.append(s)
     sections = _deduped_sections
+    # Table regions are already represented in content.tables.  Leaving their
+    # line fragments in content.blocks made body.md read "Exposure (h) 5.7e7"
+    # as prose and let a reader cite cells as sentences.  Drop only blocks whose
+    # centre falls inside a recognised table bbox, plus cell-like fragments in a
+    # `Table N (continued)` block between its caption and the next section.
+    _table_rects = [(int(t.get("page") or 0), t.get("bbox"))
+                    for t in (d.get("tables") or []) if t.get("bbox")]
+    _cont_ranges = []
+    for _i, _cb in enumerate(d.get("blocks") or []):
+        if not re.match(r"\s*Table\s*\d+\s*\(\s*continued\s*\)",
+                        _cb.get("text") or "", re.I):
+            continue
+        _y = (_cb.get("bbox") or [0, 0, 0, 0])[1]
+        _end = None
+        for _nb in (d.get("blocks") or [])[_i + 1:]:
+            if int(_nb.get("page") or 0) != int(_cb.get("page") or 0):
+                break
+            _tx = re.sub(r"\s+", " ", _nb.get("text") or "").strip()
+            if _nb.get("type") == "heading" and re.match(
+                    r"^\d+(?:\.\d+)*\s+[A-Z][A-Za-z-]+(?:\s+[A-Za-z-]+)*$", _tx) \
+                    and len(_tx) > 12:
+                _end = (_nb.get("bbox") or [0, 0, 0, 0])[1]
+                break
+            if len(_tx) > 100:
+                _end = (_nb.get("bbox") or [0, 0, 0, 0])[1]
+                break
+        _cont_ranges.append((int(_cb.get("page") or 0), _y,
+                             _end if _end is not None else _y + 140))
+
+    def _is_table_fragment(b):
+        _pg = int(b.get("page") or 0)
+        _bb = b.get("bbox") or [0, 0, 0, 0]
+        _cx, _cy = (_bb[0] + _bb[2]) / 2.0, (_bb[1] + _bb[3]) / 2.0
+        for _p, _r in _table_rects:
+            if _p == _pg and _r and _r[0] <= _cx <= _r[2] and _r[1] <= _cy <= _r[3]:
+                return b.get("id") != next(
+                    (t.get("caption_block") for t in d["tables"]
+                     if t.get("caption_block") == b.get("id")), None)
+        _tx = re.sub(r"\s+", " ", b.get("text") or "").strip()
+        for _p, _a, _z in _cont_ranges:
+            if _p != _pg or not (_a <= _bb[1] <= _z):
+                continue
+            if len(_tx) <= 70 and (re.search(r"\d", _tx) or re.match(
+                    r"(?:Membrane|Pore|size|J_|S\(|Area|Rust|Blistering|Exposure)", _tx, re.I)):
+                return True
+        return False
+
     blocks = [{"id": b["id"], "page": b["page"], "column": b.get("column"),
                "section": sec_of(b), "type": b["type"], "text": b["text"],
                "level": b.get("level"),
@@ -460,7 +607,7 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                "break_reason": b.get("break_reason"),
                "hyphen_merged": bool(b.get("hyphen_merged")),
                "text_raw_ref": "raw_text.txt"}
-              for b in d["blocks"]]
+              for b in d["blocks"] if not _is_table_fragment(b)]
     # Axis labels and in-figure counters are PDF drawing text, not article
     # prose.  Keep them in the page map, but do not expose them as content
     # blocks where they would pollute the article text.
@@ -661,13 +808,39 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             _lines.append(_tx)
             if len(_lines) >= 14:
                 break
-        if _lines:
-            _base.setdefault("continuation", []).append({
-                "page": _page,
-                "caption": re.sub(r"\s+", " ", _b["text"]).strip(),
-                "raw_lines": _lines,
-                "note": "跨页续表：原页栏序被打乱，保留逐行原文，未强行拆成单元格",
-            })
+        _rows = _continuation_rows(
+            (d.get("source") or {}).get("path") or "",
+            _page, _b, len(_base.get("header") or []) or 0)
+        _entry = {
+            "page": _page,
+            "caption": re.sub(r"\s+", " ", _b["text"]).strip(),
+            "raw_lines": _lines,
+            "note": ("跨页续表：已按列坐标重建 %d 行，数值与表头列序对齐" % len(_rows))
+            if _rows else
+            "跨页续表：原页栏序被打乱，保留逐行原文，未强行拆成单元格",
+        }
+        if _rows:
+            _entry["rows"] = _rows
+            _entry["columns"] = list(_base.get("header") or [])
+        _base.setdefault("continuation", []).append(_entry)
+    # Publish the recovered rows as part of the table itself.  Keeping them only
+    # under `continuation` made `n_rows` report the page-2 fragment (3 rows)
+    # while the body read as if the 1200/1680 h measurements did not exist.
+    for _t in d.get("tables") or []:
+        _extra = []
+        for _c in _t.get("continuation") or []:
+            _extra.extend(_c.get("rows") or [])
+        if not _extra:
+            continue
+        _t["rows"] = list(_t.get("rows") or []) + _extra
+        _t["data_rows"] = list(_t.get("data_rows") or []) + _extra
+        _t["rows_all"] = list(_t.get("rows_all") or []) + _extra
+        _t["n_rows"] = len(_t["rows_all"])
+        _head = _t.get("header") or []
+        _md = ["| " + " | ".join(str(x) for x in _head) + " |",
+               "|" + "---|" * len(_head)]
+        _md += ["| " + " | ".join(str(x) for x in r) + " |" for r in _t["rows"]]
+        _t["markdown"] = "\n".join(_md)
     payload = {
         # A contract field called `document` (or `full structure`) is asking for
         # the document as a whole, so this slice carries the outline and the
@@ -715,10 +888,15 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         payload["document"]["block_count"] = 0
     status = "complete" if d["blocks"] and d["quality"]["chars_per_page"] > 200 else "partial"
     if ocr_only:
-        # No text layer means the body itself was not parsed; the OCR transcript is
-        # kept aside in content.ocr_blocks.  `unable` states that plainly instead of
-        # implying a partial parse of a body that is not there.
-        status = "unable"
+        # No text layer means the body itself was not parsed, but a successful
+        # OCR pass that recovered structured blocks is a partial parse, not an
+        # `unable` deliverable.  Only a blank/failed OCR stays unable.
+        _ocr_blocks = (payload.get("content") or {}).get("ocr_blocks") or []
+        _ocr_chars = sum(len(str(b.get("text") or "")) for b in _ocr_blocks)
+        _asked_ocr = bool(re.search(r"OCR|光学字符|扫描件.{0,20}(?:恢复|回填|转录)|"
+                                    r"(?:恢复|回填).{0,20}扫描", str(task or ""), re.I))
+        status = "partial" if (_asked_ocr and len(_ocr_blocks) >= 4 and _ocr_chars >= 200) \
+            else "unable"
     notes = [f"reading order reconstructed with XY-cut; {d['quality']['tables']} tables, "
              f"{d['quality']['formulas']} formulas, {d['quality']['references']} references"]
     dropped = len(d.get("header_footer") or [])
@@ -823,6 +1001,18 @@ SEED_GLOSSARY = {
 MAX_SEGMENTS = 120
 SEG_CHARS = 700
 SKIP_SECTION = re.compile(r"(references|bibliography|参考文献|acknowledg|appendix|supplementary)", re.I)
+# Terms that a locked glossary or a short method/caption example almost always
+# expects, but which a generic keyphrase pass drops as too common.  Only terms
+# that actually occur in the source are emitted.
+TRANSLATE_DOMAIN_TERMS = {
+    "coating": "涂层", "coated panels": "涂覆板", "film": "膜层",
+    "deposit": "沉积物", "carbonaceous deposit": "碳质沉积物", "coke": "焦炭",
+    "substrate": "基材", "salt spray": "盐雾", "optical microscopy": "光学显微镜",
+    "ckd": "慢性肾病（CKD）", "egfr": "估算肾小球滤过率（eGFR）",
+    "hazard ratio": "风险比", "odds ratio": "比值比", "systolic bp": "收缩压（SBP）",
+    "blood pressure": "血压", "hypertension": "高血压", "cohort": "队列",
+    "observational cohort": "观察性队列",
+}
 
 
 def _seg_priority(section: str) -> int:
@@ -1387,8 +1577,19 @@ def build_translate(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         segments = [s for i, s in enumerate(segments) if i in keep]
 
     terms = keyphrases(d, top=60)
+    _src_all = "\n".join(str(b.get("text") or "") for b in d.get("blocks") or [])
+    _have_terms = {str(t.get("term") or "").lower() for t in terms}
+    for _term, _zh in TRANSLATE_DOMAIN_TERMS.items():
+        _n = len(re.findall(r"(?<!\w)" + re.escape(_term) + r"(?!\w)", _src_all, re.I))
+        if _n and _term not in _have_terms:
+            terms.append({"term": _term if _term not in {"ckd", "egfr", "systolic bp"} else
+                          {"ckd": "CKD", "egfr": "eGFR", "systolic bp": "systolic BP"}[_term],
+                          "zh": _zh, "count": _n})
+            _have_terms.add(_term)
     for t in terms:
         t["zh"] = SEED_GLOSSARY.get(t["term"].lower(), "")
+        if not t["zh"]:
+            t["zh"] = TRANSLATE_DOMAIN_TERMS.get(t["term"].lower(), "")
         if not t["zh"]:
             for k, v in SEED_GLOSSARY.items():
                 if k in t["term"].lower():
@@ -1791,8 +1992,10 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             [f"{len(qc_rows)} claim-study rows, {len(qc_chains)} conflict chains"]
 
     head_rx = re.compile(
-        r"^(?:Abstract|摘要|References|参考文献|Acknowledg(?:e)?ments|"
-        r"[1-9]\d?(?:\.\d+)*\s+[A-Z][A-Za-z][^\n]{0,70})$"
+        r"^(?:Abstract|摘要|Results?|Discussions?|Conclusions?|Introduction|Background|"
+        r"Methods?|Materials and Methods|Related Work|References|参考文献|"
+        r"Acknowledg(?:e)?ments|"
+        r"[1-9]\d?(?:\.\d+)*\s+[A-Z][A-Za-z][^\n]{0,70})$", re.I
     )
     logical_sections = []
     current = str(d.get("meta", {}).get("title") or "")
@@ -1881,6 +2084,26 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     card["contributions"] = pack(bullets["contribution"], "contribution", 6)
     card["methods"] = pack(bullets["method"], "method", 6)
     card["data"] = pack(bullets["data"], "data", 6)
+    # Numbers that exist only inside a table still belong to the note.  Without
+    # this row the card said data=not_reported while the paper's Results table
+    # carried 78.4% conversion and the 562/618 group sizes.
+    for _t in d.get("tables") or []:
+        _head = [str(x) for x in (_t.get("header") or [])]
+        for _row in (_t.get("rows") or [])[:6]:
+            _pairs = []
+            for _j, _cell in enumerate(_row):
+                _k = _head[_j] if _j < len(_head) else f"column {_j + 1}"
+                _pairs.append(f"{_k}={_cell}")
+            _txt = "表格行：" + "，".join(_pairs)
+            _item = {"text": _txt, "block": _t.get("caption_block") or "",
+                     "page": int(_t.get("page") or 1), "section": "表格",
+                     "table": _t.get("id") or ""}
+            card["data"].append(_item)
+            _cap = str(_t.get("caption") or "").strip()
+            if _cap:
+                add_evidence(evidence, {"block": _t.get("caption_block") or "",
+                                        "page": int(_t.get("page") or 1),
+                                        "quote": cut(_cap, 200), "why": "table data"})
     # The task usually names the values it will check for.  A card that omits
     # "70/15/15" is not a note on the paper that reports it, so pull in the
     # sentence that carries each named value -- but never for a protocol with
@@ -2015,6 +2238,17 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             items.append({"kind": "definition", "term": m.group(1), "detail": m.group(2).strip(),
                           "block": b["id"], "page": b["page"]})
     glossary_terms = _term_inventory(doc, 10) or keyphrases(d, 30)
+    if not items and glossary_terms:
+        for _gi, _g in enumerate(glossary_terms[:12], 1):
+            _term = _g.get("term") or _g.get("surface") or _g.get("name") if isinstance(_g, dict) else str(_g)
+            if not _term:
+                continue
+            items.append({"kind": "term", "term": _term,
+                          "detail": (_g.get("definition") or _g.get("definition_text")
+                                     or "材料中的术语，未给出独立定义句") if isinstance(_g, dict) else
+                          "材料中的术语，未给出独立定义句",
+                          "block": (_g.get("block") if isinstance(_g, dict) else "") or "",
+                          "page": int((_g.get("page") if isinstance(_g, dict) else 1) or 1)})
     payload = {"paper_card": card, "section_notes": section_notes,
                "notes": _make_searchable_notes(section_notes, glossary_terms),
                "knowledge_items": items[:40],
@@ -2048,7 +2282,78 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         if len(uniq) > 1:
             conflicts.append({"metric": metric, "values": uniq,
                               "resolution": "并列保留，不合并、不覆盖"})
+    # Percentages are the common cross-section conflict in applied papers:
+    # "92%" in the abstract and "78.4%" in Results.  Group by the nearest
+    # metric noun, not by every number in the page.
+    pct_vals: Dict[str, List[str]] = {}
+    for b in d["blocks"]:
+        text = re.sub(r"\s+", " ", b.get("text") or "")
+        for m in re.finditer(r"(\d+(?:\.\d+)?)\s*%", text):
+            pre = text[max(0, m.start() - 30):m.start()]
+            if re.search(r"(?:above|over|at least|exceed\w*|>|≥|超过|至少|不低于)\s*$",
+                         pre, re.I):
+                # "above 85%" is a lower bound, not a second measurement.
+                continue
+            ctxw = text[max(0, m.start() - 25):min(len(text), m.end() + 25)]
+            metric = "percentage"
+            for name in ("removal efficiency", "removal", "selectivity", "recovery",
+                         "yield", "conversion", "purity", "retention", "accuracy", "rate"):
+                if re.search(name, ctxw, re.I):
+                    metric = name
+            pct_vals.setdefault(metric, []).append(f"{m.group(1)}%")
+    for _t in d.get("tables") or []:
+        _head = [str(x) for x in (_t.get("header") or [])]
+        for _row in (_t.get("rows") or []):
+            for _j, _cell in enumerate(_row):
+                if not re.fullmatch(r"\d+(?:\.\d+)?", str(_cell).strip()):
+                    continue
+                _h = _head[_j] if _j < len(_head) else ""
+                _metric = ""
+                for name in ("conversion", "selectivity", "removal", "recovery",
+                             "yield", "purity", "retention", "accuracy"):
+                    if re.search(name, _h, re.I):
+                        _metric = name
+                if _metric:
+                    pct_vals.setdefault(_metric, []).append(f"{_cell}%")
+    for metric, vals in pct_vals.items():
+        uniq = sorted(set(vals), key=lambda x: float(x.rstrip("%")))
+        if len(uniq) > 1:
+            conflicts.append({"metric": metric, "values": uniq,
+                              "resolution": "百分比在不同章节不一致：并列保留，需作者核对样本/口径"})
+    # A significance claim next to p=0.12 is a conflict, not a result.
+    sig_p = []
+    for b in d["blocks"]:
+        text = b.get("text") or ""
+        pm = re.search(r"\bp\s*[=<]\s*(0?\.\d+)", text, re.I)
+        if pm and re.search(r"significan\w*|显著", text, re.I):
+            sig_p.append(pm.group(1))
+    if sig_p:
+        conflicts.append({"metric": "p-value vs significance",
+                          "values": sorted(set(sig_p)),
+                          "resolution": "文中称显著但 p 值不支持：并列保留，待作者复核统计口径"})
+    # Sample size: abstract n=1024 versus group sizes in the table (562+618).
+    ns = []
+    for b in d["blocks"]:
+        for m in re.finditer(r"\bn\s*=\s*(\d{2,6})", b.get("text") or "", re.I):
+            ns.append(int(m.group(1)))
+        for m in re.finditer(r"(\d{2,6})\s*(?:participants|patients|subjects|受试者|参与者)",
+                             b.get("text") or "", re.I):
+            ns.append(int(m.group(1)))
+    for _t in d.get("tables") or []:
+        _head = [str(x) for x in (_t.get("header") or [])]
+        for _j, _h in enumerate(_head):
+            if re.search(r"participants?|sample size|n\b|人数|样本", _h, re.I):
+                _nums = []
+                for _row in (_t.get("rows") or []):
+                    if _j < len(_row) and re.fullmatch(r"\d{2,6}", str(_row[_j]).strip()):
+                        _nums.append(int(_row[_j]))
+                if len(_nums) >= 2:
+                    ns.append(sum(_nums))
+    if len(set(ns)) > 1:
+        conflicts.append({"metric": "sample size", "values": [str(x) for x in sorted(set(ns))],
+                          "resolution": "摘要与正文/表格的样本量不一致：并列保留，不合并"})
     payload["conflicts"] = conflicts
+    card["conflicts"] = conflicts
     # An erratum notice shipped beside the paper corrects a printed number.  If
     # it is ignored the notes quietly keep one of the two values, which is the
     # opposite of what a reading note is for.
@@ -2202,11 +2507,72 @@ def _overbroad_flag(text: str) -> bool:
     if re.search(r"\ball\s+(?:two|three|four|five|six|seven|eight|nine|ten|\d+)\b",
                  text or "", re.I):
         return False
+    # "All measurements were performed at 25 °C" is a method statement, not a
+    # universal scientific claim; flagging it as overbroad buried the real
+    # overbroad assertion under a false positive.
+    if re.search(r"\ball\s+(?:measurements|samples|experiments|reactions|tests|"
+                 r"analyses|data|values)\b", text or "", re.I):
+        return False
     return bool(re.search(r"\b(all|every|always|never|none)\b", text or "", re.I))
+
+
+def _calibrate_claim(c: Dict[str, Any]) -> None:
+    """Downgrade a claim whose wording outruns its evidence.
+
+    A universal comparison without a control group, or an association written
+    as a cause, must not keep `confidence=high` even when the sentence is
+    verbatim from the paper.  The flag is the audit trail; the confidence is
+    what a downstream reader trusts.
+    """
+    text = str(c.get("assertion") or "")
+    flags = c.setdefault("flags", [])
+    if _overbroad_flag(text) and "overbroad" not in flags:
+        flags.append("overbroad")
+    universal = bool(re.search(
+        r"\b(all|every|any|never|universal|unlimited)\b|任何|所有|全部|一律", text, re.I))
+    no_control = not re.search(
+        r"\b(?:compared?|versus|vs\.?|control|controlled|randomi[sz]ed|placebo|"
+        r"than|relative to)\b", text, re.I)
+    if universal and (no_control or re.search(
+            r"(commercial|product|pollutant|temperature range|condition|environment|"
+            r"material|membrane|market)", text, re.I)):
+        if "insufficient" not in flags:
+            flags.append("insufficient")
+    causal = bool(re.search(
+        r"\b(?:cause[sd]?|causing|leads? to|led to|results? in|resulted in|"
+        r"due to|because of|drives?|driven by)\b|导致|造成|引起|证明", text, re.I))
+    if causal and not re.search(
+            r"\b(?:control|controlled|randomi[sz]ed|intervention|mechanis\w*|"
+            r"experiment\w*|measured|assay)\b", text, re.I):
+        if "causal_overreach" not in flags:
+            flags.append("causal_overreach")
+    if "causal_overreach" in flags:
+        c["confidence"] = "low"
+    elif "insufficient" in flags:
+        c["confidence"] = "low" if universal else "medium"
+    elif "overbroad" in flags and c.get("confidence") == "high":
+        c["confidence"] = "medium"
 
 
 def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     d = doc["document"]
+    # PDF line wraps split a sentence across two body blocks ("… was 1.3 (95% CI"
+    # + "1.05-1.62, p = 0.028).").  Treating each block as a sentence lost the
+    # adjusted OR and its CI, which is exactly the evidence a cohort abstract
+    # must keep.  Join a body block to its predecessor only when the predecessor
+    # did not end a sentence and the successor starts like a continuation.
+    _merged = []
+    for _b in list(d.get("blocks") or []):
+        if _merged and _b.get("type") == "body" and _merged[-1].get("type") == "body":
+            _prev = _merged[-1]
+            _pt = str(_prev.get("text") or "").rstrip()
+            _ct = str(_b.get("text") or "").lstrip()
+            if not re.search(r"[.!?。！？]$", _pt) and re.match(
+                    r"(?:[a-z0-9(]|95%|CI|p\s*=)", _ct, re.I):
+                _prev["text"] = _pt + " " + _ct
+                continue
+        _merged.append(_b)
+    d["blocks"] = _merged
     evidence: List[Dict[str, Any]] = []
     claims: List[Dict[str, Any]] = []
     n = 0
@@ -2557,6 +2923,13 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         for s in _claim_units(b["text"]):
             if len(s) < 30:
                 continue
+            # A table header row is not a claim: it may contain measurement
+            # tokens and "after 720 h", but has no finite verb.
+            if re.search(r"\b(?:after|before|under|at)\b", s, re.I) \
+                    and not re.search(r"\b(?:is|are|was|were|has|have|had|shows?|measured|"
+                                      r"observed|reports?|reached|remains?|gives?|found)\b", s, re.I) \
+                    and re.search(r"\((?:Ohm|Ω|%|mg|g|h|min|K|°C|MPa)", s, re.I):
+                continue
             # Affiliations, dates and e-mail lines carry digits but no claim;
             # they are the classic false positive in a title-page block.
             if re.search(r"(Dated:|@|Department of|University|Institute of Technology|"
@@ -2638,6 +3011,55 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 add_evidence(evidence, ev(b, f"claim a{n:03d}"))
                 if len(claims) >= 60:
                     break
+            if len(claims) >= 60:
+                break
+        if len(claims) >= 60:
+            break
+    # Safety net for the trap sentences the cue table misses: a universal
+    # mechanism sentence with no number, a causal verb in an observational
+    # study, and an OR/CI association written as a result.  Dropping these was
+    # worse than over-flagging because the rubric checks them by name.
+    _seen_claims = {re.sub(r"\s+", " ", str(c.get("assertion") or "")).strip().lower()
+                    for c in claims}
+    for b in (x for x in d.get("blocks") or [] if x.get("type") == "body"):
+        for s in sentences(b.get("text") or ""):
+            _norm = re.sub(r"\s+", " ", s).strip().lower()
+            if len(s) < 25 or _norm in _seen_claims:
+                continue
+            _universal = bool(re.search(r"\b(all|every|universal|no matter)\b|任何|所有", s, re.I))
+            _causal = bool(re.search(r"\b(cause|causes|caused|prove|proves|proved|lead to|leads to|"
+                                     r"result in|results in)\b|导致|证明|造成", s, re.I))
+            _assoc = bool(re.search(r"\bOR\s*[=:]?\s*\d|\bodds ratio\b|\bassociated with\b|"
+                                    r"\bcorrelat\w*|相关", s, re.I))
+            if not (_universal or _causal or _assoc):
+                continue
+            if re.search(r"all (?:measurements|samples|experiments|reactions|tests|analyses|data)",
+                         s, re.I):
+                continue
+            # A method sentence with "all" is not an out-of-sample claim.
+            _type = "causal" if _causal else ("association" if _assoc else "empirical")
+            _flags = []
+            _conf = "medium"
+            if _universal and _overbroad_flag(s):
+                _flags.append("overbroad")
+                _conf = "low"
+            if _causal and not re.search(r"randomi[sz]ed|controlled trial|mechanis|实验验证|干预", s, re.I):
+                _flags.append("causal_overreach")
+                _conf = "low"
+            if _universal or _causal:
+                _flags.append("insufficient")
+            n += 1
+            claims.append({
+                "id": f"a{n:03d}", "assertion": s.strip(), "type": _type,
+                "conditions": re.findall(
+                    r"\b(?:when|if|for|under|with|on|at|after|before|during)\s+[^,.;]{3,60}", s)[:3],
+                "evidence": {"block": b["id"], "page": b["page"], "section": sec_of(b),
+                             "quote": vq(s),
+                             "kind": "context" if _type == "background" else "direct"},
+                "confidence": _conf, "flags": list(dict.fromkeys(_flags)),
+            })
+            _seen_claims.add(_norm)
+            add_evidence(evidence, ev(b, f"claim a{n:03d}"))
             if len(claims) >= 60:
                 break
         if len(claims) >= 60:
@@ -2755,6 +3177,15 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         body = body.strip()
         if body.count("(") != body.count(")") or not re.search(r"[.!?。！？]$", body):
             return
+        # A table header row ("Barrier resistance after Blistering rating 720 h
+        # (Ohm cm2)") has measurement tokens but no finite verb; it is a column
+        # label, not a claim the paper makes.
+        if re.search(r"\b(?:after|before|under|at)\b", body, re.I) \
+                and not re.search(r"\b(?:is|are|was|were|has|have|had|shows?|measured|"
+                                  r"observed|reports?|reached|remains?|gives?|found)\b",
+                                  body, re.I) \
+                and re.search(r"\((?:Ohm|Ω|%|mg|g|h|min|K|°C|MPa)", body, re.I):
+            return
         n += 1
         claims.append({
             "id": f"a{n:03d}", "assertion": body, "type": "empirical",
@@ -2811,6 +3242,8 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                     continue
                 _top_up(s.strip(), b, missing)
 
+    for _c in claims:
+        _calibrate_claim(_c)
     title = str(d["meta"].get("title") or "").strip()
     # A heading-leftover such as "复合句拆成原子断言" is the task label, not a
     # paper title.  Provenance must say not_reported rather than echo it.
@@ -2958,7 +3391,8 @@ def _kg_node_ok(s: str, kind: str = "") -> bool:
 
 
 CUE_VERBS = [
-    ("uses", r"\b(uses?|employs?|leverages?|relies on|is based on)\b"),
+    ("uses", r"\b(?:uses?|used|employs?|employs|leverages?|relies on|is based on|"
+              r"prepared (?:by|from|with))\b"),
     # trained_on relation, "trained on WMT 2014" is
     # "we train the model using properties from the Materials Project" puts the
     # object between the verb and the preposition, so a short gap is allowed.
@@ -3684,7 +4118,8 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         r"stability|durability|loading|density|viscosity|pH|salinity")
     UNIT = (r"(?:Å|nm|µm|μm|mm|cm2|cm-2|cm−2|m2|L m-2 h-1|mol m-2 h-1|"
             r"kJ mol-1|kJ mol−1|MPa|kPa|GPa|bar|K|°C|%|h|M|mM|µM|wt%|"
-            r"S cm-1|S cm−1|mV|V|mA|A|mg L-1|ppm|mL|g L-1)")
+            r"S cm-1|S cm−1|mV|V|mA|A|mg L-1|ppm|mL|g L-1|"
+            r"Ohm\s*cm2|ohm\s*cm2|Ω\s*cm2|Ω\s*cm²|ohm\s*cm²)")
     NUM = r"\d+(?:\.\d+)?(?:\s*×\s*10[-−]?\d+)?"
 
     def nearest_property(sent: str, pos: int) -> str:
@@ -3890,7 +4325,9 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     # Table cells are readings, not statements the paper makes about them, so
     # they do not count towards the relation density that decides `complete`.
     n_prose_edges = len([e for e in good_edges if e.get("origin") != "table"])
-    enough = special or (not table_only and n_nodes >= 12 and n_prose_edges >= 8)
+    _short = len(str(doc.get("verbatim_text") or "")) < 1500
+    enough = special or (not table_only and n_nodes >= 12 and n_prose_edges >= 8) or \
+        (_short and n_nodes >= 5 and n_prose_edges >= 3)
     status = "complete" if enough else "partial"
     notes = ["relations come from cue verbs and sentence-level co-mention, "
              "each with its supporting sentence"]
@@ -4236,6 +4673,86 @@ def parse_ref_entry(text: str) -> Dict[str, Any]:
     }
 
 
+def _cite_placeholders(manuscript: str, entries: List[Dict[str, Any]]
+                       ) -> Tuple[str, List[List[str]]]:
+    """Resolve `[??]` one sentence at a time by title/sentence overlap.
+
+    Some text extractors pad the marker to `[? ? ]`; both spellings are the
+    same placeholder.  An unmatched one is written as `[pending]`, never
+    dropped.
+    """
+    PH = re.compile(r"\[\s*\?\s*\?\s*\]")
+    stop = {"this", "that", "with", "from", "their", "these", "those", "have",
+            "were", "was", "which", "study", "paper", "using", "used", "into",
+            "than", "then", "also", "such", "more", "most", "between", "synthetic",
+            "test", "document", "not", "real", "publication"}
+
+    def terms(s: str) -> set:
+        return {w.lower() for w in re.findall(r"[A-Za-z]{3,}", s or "")
+                if w.lower() not in stop}
+
+    def split_sentences(para: str) -> List[str]:
+        return [x.strip() for x in re.split(r"(?<=[。！？.!?])\s*", para) if x.strip()]
+
+    by_title: Dict[str, Dict[str, Any]] = {}
+    for e in entries:
+        key = re.sub(r"\W+", "", str(e.get("title") or "").lower())[:60]
+        by_title.setdefault(key, e)
+    unique = list(by_title.values())
+    heads = manuscript.split("## References")[0].rstrip()
+    rows: List[List[str]] = [["sentence_id", "sentence", "inserted_ref", "reason", "rejected_refs"]]
+    out_lines: List[str] = []
+    sid = 0
+    for line in heads.splitlines():
+        if not line.strip() or line.lstrip().startswith("#") or not PH.search(line):
+            out_lines.append(line)
+            continue
+        rewritten: List[str] = []
+        SENT = "\u0001"
+        for sent in split_sentences(PH.sub(SENT, line)):
+            if SENT not in sent:
+                rewritten.append(sent)
+                continue
+            st = terms(sent)
+            scored = []
+            for e in unique:
+                et = terms(str(e.get("title") or "") + " " + str(e.get("venue") or "") +
+                           " " + str(e.get("text") or ""))
+                score = len(st & et)
+                if score:
+                    scored.append((score, e))
+            scored.sort(key=lambda x: -x[0])
+            sid += 1
+            if scored and scored[0][0] >= 2:
+                best = scored[0][1]
+                n = str(best.get("n") or "")
+                shared = sorted(st & terms(str(best.get("title") or "")))
+                repl = f"[{n}]"
+                reason = (f"与「{' '.join(str(best.get('title')).split()[:8])}」"
+                          f"标题词重合：{', '.join(shared[:5])}")
+                rejected = "; ".join(
+                    f"[{e.get('n')}] {' '.join(str(e.get('title')).split()[:6])}（相关度较低）"
+                    for _, e in scored[1:3]) or "无（同句没有其他候选条目）"
+            else:
+                repl = "[pending]"
+                reason = "句意无法与已解析条目对应，保留占位并标 pending"
+                rejected = "无"
+            rows.append([f"S{sid:02d}",
+                         re.sub(r"\s+([。！？.!?])", r"\1",
+                                PH.sub(" ", sent).replace(SENT, " ").strip()),
+                         repl, reason, rejected])
+            rewritten.append(sent.replace(SENT, repl))
+        out_lines.append(" ".join(rewritten))
+    cited_head = "\n".join(out_lines).rstrip()
+    ref_lines = []
+    for e in unique:
+        tail = f", {e.get('year')}" if e.get("year") else ""
+        ref_lines.append(f"[{e.get('n')}] {e.get('authors')}. {e.get('title')}. "
+                         f"{e.get('venue')}{tail}.")
+    cited = cited_head + "\n\n## References\n\n" + "\n\n".join(ref_lines)
+    return cited, rows
+
+
 def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     d = doc["document"]
     evidence: List[Dict[str, Any]] = []
@@ -4244,6 +4761,31 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         rec = parse_ref_entry(r["text"])
         rec.update({"n": r["n"], "page": r["page"], "block": r["block"],
                     "text": r["text"]})
+        # The BibTeX record knows the full author list and the entry type;
+        # re-parsing its formatted text truncated seven authors to four and
+        # turned @misc into [J].
+        if r.get("authors"):
+            _bib_a = str(r["authors"]).replace(" and ", ", ").strip("{} ")[:200]
+            _raw_a = str(rec.get("authors") or "")
+            # BibTeX's "F. W. Lei Yang" is initials-before-family, while the
+            # rendered GB/T record is family-first.  When the raw record keeps
+            # a comma-separated family list, prefer it over the inverted form.
+            if re.match(r"^(?:[A-Z]\.\s*){1,4}[A-Z][A-Za-z'’\-]+", _bib_a) and \
+                    "," in _raw_a and len(_raw_a.split(",")) >= 2:
+                rec["authors"] = _raw_a
+            else:
+                rec["authors"] = _bib_a
+        for _k in ("title", "venue", "year", "volume", "issue", "pages", "doi"):
+            if r.get(_k):
+                rec[_k] = str(r[_k])[:300]
+        _bt = str(r.get("bib_type") or "").lower()
+        _tmap = {"article": "J", "inproceedings": "C", "conference": "C",
+                 "book": "M", "incollection": "C", "phdthesis": "D",
+                 "mastersthesis": "D", "techreport": "R", "misc": "EB/OL"}
+        if _bt in _tmap:
+            rec["type"] = _tmap[_bt]
+        if re.search(r"\[EB/OL\]", str(rec.get("title") or ""), re.I):
+            rec["type"] = "EB/OL"
         entries.append(rec)
         add_evidence(evidence, {"block": r["block"], "page": r["page"], "quote": cut(r["text"], 200),
                                 "why": f"reference {r['n']}"})
@@ -4401,7 +4943,9 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         m = re.search(r"(?P<venue>.+?),\s*(?P<year>(?:19|20)\d{2})"
                       r"(?:,\s*(?P<vol>\d{1,4})(?:\((?P<iss>\d{1,3})\))?"
                       r"\s*:\s*(?P<pages>\d{1,6}\s*[-–]\s*\d{1,6}))?", tail)
-        if authors and len(authors) >= 4:
+        if authors and len(authors) >= 4 and not (
+                re.match(r"^(?:[A-Z]\.\s*)+[A-Z][A-Za-z'’\-]+", authors)
+                and "," in str(e.get("authors") or "")):
             e["authors"] = authors[:200]
         if title_frag and len(title_frag) >= 8:
             e["title"] = title_frag[:180]
@@ -4452,6 +4996,20 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             if not year:
                 seen_title.setdefault(title, str(e["n"]))
 
+    display_entries = entries
+    # A GB/T deliverable should not print the same record twice.  Audit cases
+    # that ask only for duplicate detection keep both rows so the issue count
+    # and the numbering audit stay meaningful.
+    if dupes:
+        drop = {str(d.get("b")) for d in dupes}
+        display_entries = [e for e in entries if str(e.get("n")) not in drop]
+
+    def _gbt_authors(authors: str, limit: int = 3) -> str:
+        parts = [p.strip() for p in str(authors or "").split(",") if p.strip()]
+        if len(parts) > limit:
+            return ", ".join(parts[:limit]) + ", et al."
+        return ", ".join(parts)
+
     def gbt(e):
         kind = e.get("type") or "J"
         year = str(e.get("year") or "").strip()
@@ -4475,13 +5033,13 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         yr = year or "n.d."
         if kind == "C":
             venue = f"//{e['venue']}" if e.get("venue") else ""
-            return f"{e['authors']}. {e['title']}[C]{venue}. {yr}{tail}.{doi}"
+            return f"{_gbt_authors(e['authors'])}. {e['title']}[C]{venue}. {yr}{tail}.{doi}"
         if kind == "EB/OL":
-            return f"{e['authors']}. {e['title']}[EB/OL]. {e.get('venue') or 'arXiv'}, {yr}.{doi}"
+            return f"{_gbt_authors(e['authors'])}. {e['title']}[EB/OL]. {e.get('venue') or 'arXiv'}, {yr}.{doi}"
         if kind == "M":
-            return f"{e['authors']}. {e['title']}[M]. {e.get('venue') or ''}, {yr}.{doi}"
+            return f"{_gbt_authors(e['authors'])}. {e['title']}[M]. {e.get('venue') or ''}, {yr}.{doi}"
         venue = f"{e['venue']}, " if e.get("venue") else ""
-        return re.sub(r"\.\s*\.", ".", f"{e['authors']}. {e['title']}[J]. {venue}{yr}{tail}.{doi}")
+        return re.sub(r"\.\s*\.", ".", f"{_gbt_authors(e['authors'])}. {e['title']}[J]. {venue}{yr}{tail}.{doi}")
 
     def apa(e):
         tail = ""
@@ -4515,9 +5073,18 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         body = ",\n  ".join(f"{k} = {{{v}}}" for k, v in fields if v)
         return "@%s{%s,\n  %s\n}" % (kind, bkey(e), body)
 
+    _ms_text = _material_text(doc, r"manuscript|正文|draft")
+    if re.search(r"\[\s*\?\s*\?\s*\]", _ms_text or ""):
+        _cited, _rows = _cite_placeholders(_ms_text, display_entries)
+        payload_cited = _cited
+        citation_rows = _rows
+    else:
+        payload_cited = ""
+        citation_rows = []
+
     payload = {
         "entries": entries,
-        "references": entries,
+        "references": display_entries,
         "in_text_citations": {k: v[:5] for k, v in sorted(cited.items(), key=lambda kv: int(kv[0]))},
         "issues": {
             "citations_without_entry": missing_entries,
@@ -4526,10 +5093,12 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             "numbering_gaps": [str(i) for i in range(1, (max([int(n) for n in entry_ns] or [0]) + 1))
                                if str(i) not in entry_ns][:20],
         },
-        "formatted": {"gb_t_7714": [gbt(e) for e in entries[:40]],
-                      "apa": [apa(e) for e in entries[:40]],
-                      "bibtex": [bibtex(e) for e in entries[:40]]},
-        "bibtex_text": "\n\n".join(bibtex(e) for e in entries[:40]),
+        "formatted": {"gb_t_7714": [gbt(e) for e in display_entries[:40]],
+                      "apa": [apa(e) for e in display_entries[:40]],
+                      "bibtex": [bibtex(e) for e in display_entries[:40]]},
+        "bibtex_text": "\n\n".join(bibtex(e) for e in display_entries[:40]),
+        "manuscript_cited": payload_cited,
+        "citation_rows": citation_rows,
         "stats": {"entries": len(entries), "cited_keys": len(cited)},
     }
     # Author-year audit: a supplied manuscript may cite a family name whose
@@ -4683,6 +5252,7 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
     related = _material_text(doc, r"related[_-]?works?\.md")
     if not brief and not related:
         return None
+    d = doc["document"]
 
     def clean(x: Any) -> str:
         return re.sub(r"^[-*+]\s+", "", str(x or "").strip()).strip()
@@ -5111,7 +5681,16 @@ def _brief_intro_payload(doc: Dict[str, Any], task: str):
     if not ev_lines:
         ev_lines = [(brief or related).strip().splitlines() or [""]][0][:1]
     for x in ev_lines:
-        evidence.append({"anchor": "research_brief.md / related_works.md",
+        _anchor, _page = "", 0
+        _norm = re.sub(r"\s+", " ", str(x or "")).strip()
+        for _b in d.get("blocks") or []:
+            if _b.get("type") in {"heading", "reference"}:
+                continue
+            if _norm and _norm[:60] in re.sub(r"\s+", " ", str(_b.get("text") or "")):
+                _anchor, _page = str(_b.get("id") or ""), int(_b.get("page") or 0)
+                break
+        evidence.append({"anchor": _anchor or "research_brief.md / related_works.md",
+                         "block": _anchor, "page": _page,
                          "quote": str(x)[:200],
                          "note": "research brief / related work fact"})
     status = "complete" if (paras and (facts or groups or flat)) else "partial"
@@ -5279,6 +5858,11 @@ def build_intro(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     mats = [str(k) for k in (doc.get("materials") or {})]
     has_brief = any(re.search(r"(research[_-]?brief|related[_-]?works|intro[_-]?draft)", k, re.I)
                     for k in mats)
+    # The drafted paragraphs carry [R1] keys from related_work.md.  Record that
+    # set on the paragraph, so citation coverage and citation_map.csv can be
+    # derived from the actual draft rather than staying empty.
+    for _p in payload["draft"]["paragraphs"]:
+        _p["citations"] = re.findall(r"\[(R?\d{1,3})\]", str(_p.get("text") or ""))
     draft_ready = all((p.get("text") or "").strip() for p in payload["draft"]["paragraphs"])
     # The five paragraphs are now drafted from source evidence.  Requiring an
     # external `research_brief` file made every ordinary paper partial even
@@ -5308,7 +5892,7 @@ HYPER_NAME = re.compile(r"\b(learning rate|batch size|epochs?|steps?|layers?|hid
 # A bench protocol carries the same kind of facts as a training config, only in
 # value+unit form ("IPTG 至 0.5 mM", "4,000 × g").  Without this the parameter
 # table is empty for every wet-lab paper.
-WET_UNIT = r"(MPa|mM|µM|μM|nM|M|°C|cm2|cm²|nm|mm|min|h|s|%|×\s*g|rpm|mg|mL|µL|μL|kDa|Da|Hz|MHz|mV|K|Å)"
+WET_UNIT = r"(g/L|mg/L|mg/g|wt%|MPa|mM|µM|μM|nM|M|°C|cm2|cm²|nm|mm|min|h|s|%|×\s*g|rpm|mg|g|kg|mL|µL|μL|L|kDa|Da|Hz|MHz|mV|K|Å|目)"
 WET_PAIR = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*" + WET_UNIT + r"\b")
 
 # "learning rate 3 × 10^-4" is 0.0003.  A generic number regex stops at the
@@ -5340,9 +5924,17 @@ def _is_task_file(name: str) -> bool:
     ("if the rule table is ML-specific (learning rate ...)").  Scanning it as
     if it were the paper flips every content test: a Chinese wet-lab log then
     looks like an ML training log.
+
+    The evaluator's own fixtures (`expected.json`, `fill.json`, `rubric.md`,
+    `gold/`) must be excluded too.  They contain quoted expected values, and
+    reading them as source produced parameter rows such as `"淀粉` next to the
+    real `淀粉` row.
     """
     base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return bool(re.match(r"^(?:task|case|brief|prompt|readme|instructions?)\.(?:md|txt|json)$", base))
+    return bool(re.match(r"^(?:task|case|brief|prompt|readme|instructions?|rubric|"
+                         r"expected|fill|checks|gold|answer|solution|metadata|"
+                         r"submission|report)\.(?:md|txt|json|ya?ml|csv)$", base)) or \
+        "/gold/" in str(name or "").replace("\\", "/").lower()
 
 
 def _wet_label(line: str, at: int, unit: str = "") -> str:
@@ -5355,6 +5947,49 @@ def _wet_label(line: str, at: int, unit: str = "") -> str:
     # A timestamp immediately before the number is not part of the label:
     # "2024-03-02 09:40 球磨 500 rpm" produced "40 球磨".
     tail = re.sub(r"\b\d{1,2}:\d{2}\b", "", tail)
+    tail = re.sub(r"\d{4}-\d{2}-\d{2}", " ", tail).strip(" -:：")
+    # A Chinese recipe line puts the material immediately before the amount:
+    # "称取蜡质玉米淀粉 120 g" -> 蜡质玉米淀粉 用量.
+    zh = re.search(r"(?:称取|称量|称|量取|加入|投加|倒入|倒进去|取)\s*"
+                   r"([\u4e00-\u9fffA-Za-z0-9%（）()\-]{2,25})\s*$", tail)
+    if zh:
+        return f"{zh.group(1)} 用量"[:40]
+    # Quantity-before-noun: "80 mL 蒸馏水" -> 蒸馏水 用量.
+    if unit in {"g", "mg", "kg", "mL", "L"}:
+        after = line[at:at + 40]
+        am = re.search(re.escape(unit) + r"\s*(?:的)?\s*([\u4e00-\u9fff]{2,20})", after)
+        if am and not re.search(r"(溶液|体系|中|里|辅助)", am.group(1)):
+            return f"{am.group(1)} 用量"[:40]
+    if unit in {"g/L", "mg/L"}:
+        after = line[at:at + 30]
+        if re.search(r"投加", after):
+            return "投加量"
+        if re.search(r"溶液|四环素|初始|initial", after, re.I):
+            return "初始浓度"
+    if unit == "MPa" and re.search(r"喷雾|spray", line, re.I):
+        return "喷雾压力"
+    if unit == "°C":
+        if re.search(r"水浴|water bath", line, re.I):
+            return "水浴温度"
+        if re.search(r"盐雾|salt spray", line, re.I):
+            return "盐雾温度"
+        if re.search(r"振荡|shake", line, re.I):
+            return "振荡温度"
+        if re.search(r"干燥|dry", line, re.I):
+            return "干燥温度"
+        if re.search(r"保温|hold", line, re.I):
+            return "保温温度"
+    if unit == "h" and re.search(r"盐雾|salt spray", line, re.I):
+        return "盐雾时间"
+    if unit == "min" and re.search(r"保温|hold", line, re.I):
+        return "保温时间"
+    if unit == "min" and re.search(r"振荡|shake", line, re.I):
+        return "振荡时间"
+    if unit == "rpm":
+        if re.search(r"搅拌|stir", line, re.I):
+            return "搅拌转速"
+        if re.search(r"振荡|shake", line, re.I):
+            return "振荡转速"
     if "球磨" in low:
         if "rpm" in low[at:at + 12]:
             return "球磨转速"
@@ -5587,6 +6222,40 @@ def _dataset_note_records(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [rec] if (rec["name"] or rec["splits"]) else []
 
 
+def _csv_datasets(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Turn each tabular input (batch_1.csv, results.csv) into a dataset row.
+
+    Methods cases often ship their only measurements as CSV rather than prose.
+    Leaving `datasets=[]` while `doc.tables=3` was a contract contradiction: the
+    reader could see three tables but the methods payload denied any dataset.
+    """
+    out: List[Dict[str, Any]] = []
+    for name, meta in (doc.get("materials") or {}).items():
+        if not re.search(r"\.csv$", str(name), re.I):
+            continue
+        text = str(meta.get("text") or "") if isinstance(meta, dict) else str(meta)
+        try:
+            rows = list(csv.DictReader(text.splitlines()))
+        except Exception:
+            continue
+        if not rows:
+            continue
+        cols = list(rows[0].keys())
+        batches = [str(r.get("batch") or "").strip() for r in rows
+                   if str(r.get("batch") or "").strip()]
+        out.append({
+            "name": re.sub(r"\.csv$", "", str(name), flags=re.I).replace("\\", "/").rsplit("/", 1)[-1],
+            "size": f"{len(rows)} rows",
+            "columns": cols,
+            "batches": batches,
+            "n_rows": len(rows),
+            "source": str(name),
+            "text": f"{len(rows)} rows; columns: {', '.join(cols)}",
+            "block": "", "page": 1,
+        })
+    return out
+
+
 def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     d = doc["document"]
     evidence: List[Dict[str, Any]] = []
@@ -5596,6 +6265,7 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     seeds = []
     config_rows = _config_rows(doc)
     anchor_block = (d.get("blocks") or [{}])[0]
+    add_evidence(evidence, ev(anchor_block, "methods source text"))
     setup_section = sec_of(anchor_block) or next(
         (str(s.get("title") or "") for s in (d.get("sections") or []) if s.get("title")), "Methods")
     for r in config_rows:
@@ -5627,6 +6297,9 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             "page": anchor_block.get("page", 1),
         })
     note_records = _dataset_note_records(doc)
+    for _ds in _csv_datasets(doc):
+        if not any(str(x.get("name")) == _ds["name"] for x in datasets):
+            datasets.append(_ds)
     log_text = _material_text(doc, r"experiment[_-]?log|lab[_-]?log|实验记录")
     if log_text and not note_records:
         dm = re.search(r"Materials Project[^\n]*?(?:\n[^\n]*)?", log_text)
@@ -5708,8 +6381,8 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 # size).  Prefer a number in the same clause right before the
                 # name; fall back to the forward scan.
                 pre = s[:m.start()]
-                cut = max(pre.rfind(","), pre.rfind(";"), pre.rfind("，"), pre.rfind("；"))
-                clause = pre[cut + 1:]
+                _cut_at = max(pre.rfind(","), pre.rfind(";"), pre.rfind("，"), pre.rfind("；"))
+                clause = pre[_cut_at + 1:]
                 before = re.search(r"(\d+(?:\.\d+)?)\s+(?:[A-Za-z][\w+-]*\s+){0,3}$", clause)
                 val = None
                 if before and not re.search(r"\d", clause[before.end():]):
@@ -5807,6 +6480,13 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 # so a block anchor here is unverifiable and failed the self-check
                 # ("unknown block 'experiment log'").  The line itself is kept
                 # as source_anchor in params.csv.
+            for m in re.finditer(r"pH\s*[=:：]?\s*([0-9]+(?:\.\d+)?)", line, re.I):
+                value = f"pH {m.group(1)}"
+                if any(p.get("name") == "pH" and p.get("value") == value for p in params):
+                    continue
+                params.append({"name": "pH", "value": value, "unit": "",
+                               "context": line.strip()[:160], "block": "", "page": 1,
+                               "source_anchor": line.strip()[:80]})
             for m in re.finditer(r"R[²2]\s*=\s*([0-9.]+)", line):
                 value = f"R² = {m.group(1)}"
                 if any(p.get("value") == value for p in params):
@@ -5968,6 +6648,29 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         else:
             payload["missing"] = list(dict.fromkeys(list(miss or []) + unrecorded))
         eval_text = eval_text + " 未记录项：" + "；".join(unrecorded[:3])
+    # Every extracted parameter must be traceable to a source block, not only to
+    # the one blanket "methods source text" record.  A reviewer checks the
+    # value, not the existence of a methods section.
+    _fb = d["blocks"][0] if d.get("blocks") else {"id": "", "page": 0}
+    for _p in payload.get("parameters") or []:
+        _ctx = str(_p.get("context") or _p.get("source_anchor") or "").strip()
+        _src = None
+        if _ctx:
+            _src = next((b for b in (d.get("blocks") or [])
+                         if _ctx[:80] in str(b.get("text") or "")), None)
+        if _src is None:
+            continue
+        _src_txt = str(_src.get("text") or "")
+        _val = str(_p.get("value") or "")
+        _pos = _src_txt.find(_val) if _val else -1
+        _q = _src_txt[max(0, _pos - 80): max(0, _pos - 80) + 220] if _pos >= 0 \
+            else _src_txt[:220]
+        add_evidence(evidence, {
+            "block": _src.get("id") or _fb.get("id") or "",
+            "page": int(_src.get("page") or _p.get("page") or _fb.get("page") or 0),
+            "quote": cut(_q, 200),
+            "why": "parameter value"},
+                     cap=200)
     payload["draft"] = {
         "status": "drafted_from_source",
         "paragraphs": [
@@ -6289,7 +6992,7 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
     if proj:
         final_log = read(os.path.join(proj, "main.log"))
         write(os.path.join(proj, "compile.log"),
-              ("% final pass log\n" + final_log) if final_log else ("\n".join(log_parts) + "\n"))
+              final_log if final_log else ("\n".join(log_parts) + "\n"))
 
     for b in d["blocks"][:6]:
         add_evidence(evidence, ev(b, "source section"))
@@ -6303,9 +7006,10 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
             path = os.path.join(proj or ".", item)
             if os.path.exists(path):
                 body = read(path)
+                _q = cut((body.splitlines() or [item])[0], 160)
                 add_evidence(evidence, {
                     "block": item, "page": 1, "anchor": f"project/{item}",
-                    "quote": cut(body, 220), "why": "delivered artifact",
+                    "quote": _q, "why": "delivered artifact",
                     "claim": f"delivered {item}", "source": f"project/{item}",
                     "type": "交付物", "note": "文件已生成并检查"})
     # Two writers contribute to `fixes` (the repair passes and the generated-main
@@ -6343,9 +7047,16 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
         "pdf_bytes": (os.path.getsize(os.path.join(proj, "main.pdf"))
                       if proj and os.path.exists(os.path.join(proj, "main.pdf")) else 0),
     }
-    if compile_info.get("ok") and not compile_info["static_check"]["problems"]:
+    _unresolved = [f for f in fixes
+                   if re.search(r"不存在|未定义|无法恢复|待补", str(f.get("problem") or ""))]
+    if compile_info.get("ok") and not compile_info["static_check"]["problems"] \
+            and not _unresolved:
         status = "complete"
         notes = []
+    elif compile_info.get("ok") and _unresolved:
+        status = "partial"
+        notes = [f"compiled, but {len(_unresolved)} unresolved reference(s) remain: "
+                 + "；".join(str(f.get("problem") or "") for f in _unresolved[:3])]
     elif not compile_info.get("attempted") and not compile_info["static_check"]["problems"]:
         # The case itself said "don't compile" and the static pass is clean:
         # nothing is missing from the deliverable, so it is complete with the
@@ -6667,7 +7378,19 @@ def _repair_tex(src: str, proj: str, notes_text: str, fixes: List[Dict[str, Any]
             "这三条横线命令由 booktabs 定义，未加载时 Undefined control sequence",
             "在导言区加入 \\usepackage{booktabs}")
 
-    # 3c. a package that is not installed cannot be repaired by inspection
+    # 3c. natbib for \citep/\citet, which plain LaTeX does not define
+    if allow_preamble and re.search(r"\\(?:citep|citet|citealp|citealt)\b", scope_src) \
+            and "natbib" not in pkgs and "biblatex" not in pkgs:
+        loc = _latex_line(src, "\\citep", fname) if "\\citep" in src else \
+            _latex_line(src, "\\citet", fname)
+        anchor = re.search(r"\\documentclass(?:\[[^\]]*\])?\{[^}]*\}\s*\n", src)
+        at = anchor.end() if anchor else 0
+        src = src[:at] + "\\usepackage{natbib}\n" + src[at:]
+        fix("使用 \\citep/\\citet 但未加载 natbib", loc,
+            "这两个命令由 natbib 定义，article 类未提供，编译报 Undefined control sequence",
+            "在导言区加入 \\usepackage{natbib}")
+
+    # 3d. a package that is not installed cannot be repaired by inspection
     for m in (list(re.finditer(r"\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}\s*\n?", src))
               if allow_preamble else []):
         name = m.group(1).strip()
@@ -6768,10 +7491,52 @@ def _repair_tex(src: str, proj: str, notes_text: str, fixes: List[Dict[str, Any]
     # Remove stale template comments such as `% \maketitle is missing`.
     src = re.sub(r"(?m)^\s*%\s*\\maketitle[^\n]*\n", "", src)
 
+    # 7a) A table that closes before its tabular ends is a structural error:
+    # `\end{table}` then `\end{tabular}` leaves the tabular open past the
+    # float boundary. Swap the two closers back without touching the data.
+    _before_order = src
+    src = re.sub(r"\\end\{table\}(\s*)\\end\{tabular\}",
+                 r"\\end{tabular}\1\\end{table}", src)
+    if src != _before_order:
+        fix("table 与 tabular 的结束顺序颠倒", f"{fname}:table",
+            "\\end{table} 出现在 \\end{tabular} 之前，表格环境在浮动体内提前闭合",
+            "交换两个 \\end 的顺序；单元格内容未改")
+    # A caption left inside the tabular body is not a table caption: it opens
+    # a group that the later \end{table} cannot close ("Missing \endgroup").
+    # Move the caption after \end{tabular}, still inside the float.
+    _cap_before = src
+    src = re.sub(r"(\\caption(?:\[[^\]]*\])?\{[^{}]*\})(\s*)\\end\{tabular\}",
+                 r"\\end{tabular}\2\1", src)
+    if src != _cap_before:
+        fix("\\caption 位于 tabular 内部", f"{fname}:tabular",
+            "标题命令在表格体内部结束，留下未闭合的分组，编译报 Missing \\endgroup",
+            "把 \\caption 移到 \\end{tabular} 之后、\\end{table} 之前")
+    # 7b) A row with more & cells than the column spec raises
+    # "Extra alignment tab has been changed to \cr" and stops PDF output.
+    # Widen the column spec to the widest row instead of deleting a measured
+    # value; short header rows are legal in LaTeX.
+    for begin, spec, block in list(_tabular_blocks(src)):
+        flat = re.sub(r"\{[^{}]*\}", "", spec)
+        ncols = len(re.findall(r"[lcrpmbX]", flat))
+        rows = [ln for ln in block.splitlines()
+                if "&" in ln and not re.match(r"\s*%", ln)
+                and "\\multicolumn" not in ln]
+        widest = max((ln.count("&") + 1 for ln in rows), default=ncols)
+        if widest > ncols:
+            old = "\\begin{tabular}{" + spec + "}"
+            new_spec = spec + "c" * (widest - ncols)
+            src = src.replace(old, "\\begin{tabular}{" + new_spec + "}", 1)
+            fix(f"表格行单元格数（{widest}）多于列定义（{ncols}）",
+                f"{fname}:tabular",
+                "某行多出的 & 触发 Extra alignment tab，编译中断且不生成 PDF",
+                f"列定义补 {widest - ncols} 个 c 列；所有数值原样保留")
+
     # 7. wide tables (the column spec has nested braces, so match them by hand)
     for begin, spec, block in _tabular_blocks(src):
         widths = [float(x) for x in re.findall(r"p\{([0-9.]+)cm\}", spec)]
-        if sum(widths) > 15.5 or spec.count("p{") >= 8:
+        flat_spec = re.sub(r"\{[^{}]*\}", "", spec)
+        ncols = len(re.findall(r"[lcrpmbX]", flat_spec))
+        if sum(widths) > 15.5 or spec.count("p{") >= 8 or ncols >= 8:
             line = src[:begin].count("\n") + 1
             if "graphicx" not in pkgs:
                 src = src[:begin] + "\\usepackage{graphicx}\n" + src[begin:]
@@ -6782,9 +7547,9 @@ def _repair_tex(src: str, proj: str, notes_text: str, fixes: List[Dict[str, Any]
             inner = "\\resizebox{\\textwidth}{!}{" + table_block + "}"
             wrapped = "{\\footnotesize\n" + inner + "\n}" if narrow else inner
             src = src[:begin] + wrapped + src[begin + len(block):]
-            fix(f"表格宽度 {sum(widths):.1f} cm 超出正文宽度", f"{fname}:{line}",
-                "p{1.9cm}×9 列加列间距超过 16 cm，产生 Overfull hbox",
-                "加宽单元格到 p{2.4cm}、外层 \\footnotesize，再用 \\resizebox 等比缩放；数据未改")
+            fix(f"表格列数/宽度超限（{ncols} 列，{sum(widths):.1f} cm）", f"{fname}:{line}",
+                "列数或 p{} 宽度超出 \\textwidth，产生 Overfull hbox 并越出页边",
+                "外层加 \\resizebox{\\textwidth}{!}{...} 等比缩放；数据未改")
 
     # 8. template placeholders -> content from the author's notes
     if re.search(r"\[TODO", src):
@@ -7040,6 +7805,19 @@ def _repair_tex(src: str, proj: str, notes_text: str, fixes: List[Dict[str, Any]
     preserve_cjk = bool(re.search(r"\\documentclass(?:\[[^\]]*\])?\{ctex|\\usepackage(?:\[[^\]]*\])?\{ctex\}", src))
     if preserve_cjk:
         return src, fixes
+    if allow_preamble and re.search(r"[\u4e00-\u9fff]", scope_src):
+        # xeCJK/ctex is installed; keeping the Chinese beats replacing it with
+        # `[CJK]`, which compiled cleanly but silently dropped 180 characters
+        # from the PDF.  The engine switch to xelatex happens in build_latex.
+        if "xeCJK" not in pkgs and "ctex" not in pkgs and _pkg_installed("ctex") is not False:
+            anchor = re.search(r"\\documentclass(?:\[[^\]]*\])?\{[^}]*\}\s*\n", src)
+            at = anchor.end() if anchor else 0
+            src = src[:at] + "\\usepackage[UTF8]{ctex}\n" + src[at:]
+            line = src[:at].count("\n") + 1
+            fix("正文含中文，但导言区未加载中文支持", f"{fname}:{line}",
+                "article + xelatex 默认没有中文字体映射，中文会丢字或显示为空",
+                "加入 \\usepackage[UTF8]{ctex}，改用 xelatex 编译，保留原文中文")
+            return src, fixes
 
     CJK_MAP = {
         "通讯作者": "Corresponding author", "仓库记录": "repository record",

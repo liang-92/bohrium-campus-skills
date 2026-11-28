@@ -380,7 +380,14 @@ def _validate_staged(result: Dict[str, Any], st: Dict[str, Any],
         problems.append("required file(s) are empty: " + ", ".join(empty[:10]))
     if status == "success" and (missing or empty):
         problems.append("status=success but required files are missing or empty")
-    if status == "success" and not (result.get("change_log") or []):
+    # Only edit/repair tasks keep a change log.  Requiring it for a methods or
+    # notes deliverable made every otherwise-valid result fail self-check and
+    # get downgraded to partial, with a message ("change_log is empty") that
+    # names a file the case never asked for.
+    _needs_changelog = ("change_log" in names and "change_log" in req) or any(
+        str(x).lower() in {"changes.csv", "change_log.csv", "fix_report.md"}
+        for x in req)
+    if status == "success" and _needs_changelog and not (result.get("change_log") or []):
         problems.append("status=success but change_log is empty")
     return {"ok": (not problems and status == "success"),
             "structural_ok": not problems,

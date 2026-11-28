@@ -350,6 +350,33 @@ def _appendix(ctx: Ctx) -> str:
 
 def _notes_md(ctx: Ctx) -> str:
     d = ctx.d
+    payload = ctx.payload or {}
+    card = payload.get("paper_card") or {}
+    conflicts = payload.get("conflicts") or []
+    out = ["# 阅读笔记", ""]
+    if card.get("title"):
+        out += [f"**题目**：{card['title']}", ""]
+    if card.get("summary"):
+        out += ["## 概要", str(card["summary"]), ""]
+    for key, label in (("findings", "主要发现"), ("data", "数据"),
+                       ("methods", "方法"), ("limitations", "局限"),
+                       ("contributions", "贡献")):
+        items = card.get(key) or []
+        if not items:
+            continue
+        out.append(f"## {label}")
+        for it in items[:8]:
+            txt = it.get("text") if isinstance(it, dict) else str(it)
+            if txt and txt != "not_reported":
+                out.append(f"- {txt}")
+        out.append("")
+    if conflicts:
+        out.append("## 冲突 / 存疑")
+        for c in conflicts:
+            if isinstance(c, dict):
+                out.append(f"- {c.get('metric')}：{'；'.join(str(x) for x in (c.get('values') or []))}"
+                           f"（{c.get('resolution') or '并列保留，待作者核对'}）")
+        out.append("")
     foot = d.get("footnotes") or []
     marg = d.get("margin_notes") or []
     if not foot and not marg:
@@ -357,7 +384,7 @@ def _notes_md(ctx: Ctx) -> str:
         for b in d.get("blocks", []):
             if re.match(r"^[*†‡§]|^\d+\s*$", b.get("text", "")) and len(b.get("text", "")) < 200:
                 foot.append({"block": b.get("id"), "page": b.get("page"), "text": b.get("text")})
-    out = ["# 脚注 / 边注", ""]
+    out += ["---", "", "# 脚注 / 边注", ""]
     if foot:
         out.append("## 脚注")
         for f in foot[:30]:
@@ -1065,11 +1092,31 @@ KG_RULES: List[Tuple[str, str, str]] = [
                r"ab initio|first[- ]principles?)\b", ""),
     ("Metric", r"\b(?:accuracy|precision|recall|F1(?:[- ]score)?|BLEU|ROUGE|METEOR|"
                r"perplexity|AUC|MAE|MSE|RMSE|IoU|mAP|WER|CER|throughput|latency)\b", ""),
+    # Engineering papers name standards, commercial alloys and coating
+    # materials in exactly this shape; without these rules a corrosion paper
+    # produced four nodes and no auditable edge.
+    ("Method", r"\b(?:GB/T|ISO|ASTM|EN|JIS|DIN)\s*[A-Z]?\d[\w./-]*\b", ""),
+    ("Material", r"\bQ\d{3}[A-Z]?\b", ""),
+    ("Material", r"\b(?:zinc dust filler|zinc particles?|epoxy binder|"
+                 r"zinc-rich epoxy primer|coating layer|Q235B carbon steel|"
+                 r"carbon steel panels?)\b", ""),
+    ("Material", r"\b(?:[A-Za-z0-9][\w-]*\s+){0,2}(?:carbon steel|stainless steel|"
+                 r"epoxy primer|epoxy binder|zinc dust|zinc-rich epoxy|coating layer|"
+                 r"primer|coating|film|substrate|binder|filler|particles?|carbon|"
+                 r"dye|adsorbent|electrode|electrolyte|catalyst|additive|inhibitor|"
+                 r"reaction|surface|panels?)\b", ""),
+    ("Method", r"\b(?:salt spray(?: test| exposure)?|electrochemical impedance"
+               r"(?: spectroscopy)?|optical microscopy|UV-visible"
+               r"(?: spectrophotometry)?|spectrophotometry|chromatography|"
+               r"gravimetric|titration|microscopy|spectroscopy)\b", ""),
+    ("Metric", r"\b(?:barrier resistance|coating thickness|corrosion current|red rust|"
+               r"blistering(?: rating)?|adsorption(?: capacity)?|dye uptake|"
+               r"removal efficiency|conversion|selectivity|current density|impedance)\b", ""),
 ]
 VALUE_RX = re.compile(
     r"\b\d+(?:[.,]\d+)?(?:\s*(?:–|-|to)\s*\d+(?:[.,]\d+)?)?\s*"
     r"(?:×\s*10-?\d+\s*)?(?:S cm-1|S/cm|Ω cm2|Ω·cm2|mA cm-2|GPa|µm|μm|%|K|h|s|"
-    r"MPa|rpm|Hz|mV|mm|目)\b")
+    r"MPa|rpm|Hz|mV|mm|目|micrometre|micrometer)\b")
 
 
 def _kg_bad_label(surface: str, kind: str = "") -> bool:
@@ -1086,9 +1133,16 @@ def _kg_bad_label(surface: str, kind: str = "") -> bool:
         return bool(re.match(r"^(?:the results|the authors|we|this|these|it)\b", s.lower()))
     if len(s) > 80 or len(s.split()) > 8:
         return True
+    if kind in ("Material", "Method") and re.match(
+            r"^\d+(?:\.\d+)?\s*(?:micrometre|micrometer|µm|μm|mm|nm|%|wt%)\s+", s, re.I):
+        return True
     low = s.lower()
     if re.match(r"^(?:from|to|after|before|as|and|but|which|that|this|these|those|"
-                r"the authors|the results|it|they|we|there)\b", low):
+                r"the authors|the results|it|they|we|there|under|above|below|over)\b", low):
+        return True
+    if kind in ("Material", "Method") and re.match(
+            r"^(?:uses?|uses a|contains?|includes?|comprises?|shows?|showed|prepared|"
+            r"coated|measured|reduced|increased)\b", low):
         return True
     if re.search(r"\b(?:conclude|suggest|consistent with|related to|attribute|"
                  r"rather than|as grain size|does not control)\b", low):
@@ -1113,6 +1167,8 @@ def _kg_entities(ctx: Ctx) -> List[Dict[str, str]]:
 
     def add(kind: str, surface: str, norm: str, b: Dict[str, Any], quote: str) -> None:
         s = re.sub(r"\s+", " ", surface.strip(" ,.;"))
+        s = re.sub(r"^(?:the|a|an)\s+", "", s, flags=re.I)
+        s = re.sub(r"^(?:of|in|on|at|by|for|with|from|to)\s+", "", s, flags=re.I)
         if len(s) < 2 or _kg_bad_label(s, kind):
             return
         # Temperature/duration conditions are edge qualifiers, not entities.
@@ -1130,9 +1186,9 @@ def _kg_entities(ctx: Ctx) -> List[Dict[str, str]]:
         idx = body.find(quote[:80])
         pages = re.findall(r"\[p\.(\d+)\]", body[:idx]) if idx >= 0 else []
         page = int(pages[-1]) if pages else int(b.get("page") or 1)
-        anchor = f"p{page} · {b.get('id', '')}"
+        anchor = b.get("id", "")
         e = {"entity_id": eid, "type": kind, "surface": s, "normalized": norm,
-             "paper_id": _paper_of(b), "anchor": anchor, "quote": quote[:260]}
+             "paper_id": _paper_of(b) or "P1", "anchor": anchor, "quote": quote[:260]}
         seen[key] = e
         ents.append(e)
 
@@ -1165,14 +1221,16 @@ def _kg_relations(ctx: Ctx, ents: List[Dict[str, str]] | None = None) -> List[Di
     seen = set()
 
     def add(sub: str, pred: str, obj: str, cond: str, b: Dict[str, Any], quote: str) -> None:
+        sub = re.sub(r"^(?:a|an|the)\s+", "", str(sub).strip(), flags=re.I)
+        obj = re.sub(r"^(?:a|an|the)\s+", "", str(obj).strip(), flags=re.I)
         key = (sub.lower(), pred, obj.lower())
         if key in seen or _kg_bad_label(sub) or _kg_bad_label(obj):
             return
         seen.add(key)
         out.append({"rel_id": f"r{len(out) + 1:02d}", "subject": sub,
-                    "predicate": pred, "object": obj,
+                    "predicate": pred, "relation": pred, "object": obj,
                     "condition": cond or "",
-                    "paper_id": _paper_of(b), "anchor": b.get("id", ""),
+                    "paper_id": _paper_of(b) or "P1", "anchor": b.get("id", ""),
                     "quote": quote[:260]})
 
     labels: Dict[str, Dict[str, str]] = {}
@@ -1196,9 +1254,16 @@ def _kg_relations(ctx: Ctx, ents: List[Dict[str, str]] | None = None) -> List[Di
     cue = [(r"\bdepends? on\b|\bdetermined by\b", "depends_on"),
            (r"\bincreas\w*\b|\benhanc\w*\b|\braise[sd]?\b", "increases"),
            (r"\bdecreas\w*\b|\breduc\w*\b", "decreases"),
+           (r"\binhibit\w*\b", "inhibits"),
+           (r"\bcontain\w*\b|\bcomposed of\b|\bconsists? of\b", "contains"),
+           (r"\bdispersed in\b|\bembedded in\b", "contains"),
+           (r"\bmeasur\w*\b", "measures"),
+           (r"\bfollow(?:ed|s)?\b|\baccording to\b|\bconducted against\b", "follows"),
+           (r"\bdefine\w*\b|\bspecif\w*\b", "defines"),
            (r"\bsupport\w*\b|\bconsistent with\b|\bconfirm\w*\b", "supports"),
            (r"\bcontradict\w*\b|\binconsistent with\b", "contradicts"),
            (r"\buses?\b|\bemploy\w*\b|\bmeasured by\b", "uses"),
+           (r"\bprepared (?:to|by|from|with)\b|\bcoated with\b", "uses"),
            (r"\bshows?\b|\bdemonstrat\w*\b", "shows"),
            (r"\breach(?:es|ed)?\b", "reaches"),
            (r"\bremain(?:ed|s)?\b", "remains"),
@@ -1339,7 +1404,96 @@ def _ambiguity(ctx: Ctx) -> str:
     return "\n".join(out)
 
 
+def _five_type(label: str, kind: str) -> str:
+    """Map a graph node to the five graded classes without inventing content."""
+    lab = str(label or "")
+    k = str(kind or "").lower()
+    if re.fullmatch(r"[+\-−]?\d+(?:\.\d+)?(?:\s*[×x]\s*10[-−]?[0-9]+)?(?:\s*[A-Za-z%μµ/]+)?", lab):
+        return "Value"
+    if re.match(r"^(?:GB/T|ISO|ASTM|EN|JIS|DIN)\b", lab, re.I):
+        return "Method"
+    if re.search(r"\b(?:resistance|conductivity|efficiency|capacity|flux|permeance|"
+                 r"selectivity|size|thickness|stability|hardness|impedance|current|"
+                 r"voltage|rate|yield|purity|density|pH)\b", lab, re.I):
+        return "Metric"
+    if re.search(r"\b(?:EIS|XRD|SEM|TEM|NMR|FTIR|test|measurement|spectroscop\w*|"
+                 r"microscop\w*|diffraction|milling|sintering|coating|treatment|"
+                 r"preparation|synthesis|method)\b", lab, re.I):
+        return "Method"
+    if re.search(r"\b(?:system|sample|substrate|membrane|material|powder|film|"
+                 r"electrode|electrolyte|solution|primer|agent|Q\d{3,}|"
+                 r"[A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*){2,})\b", lab, re.I):
+        return "Material"
+    if k in {"material", "method", "metric", "value", "claim"}:
+        return k.capitalize()
+    if k in {"property", "measurement"}:
+        return "Metric"
+    if k in {"concept", "task", "dataset", "tool"}:
+        return "Claim"
+    return "Claim"
+
+
 def _entities(ctx: Ctx) -> str:
+    nodes = (ctx.payload or {}).get("nodes") or []
+    # The typed rules read standards, alloys, coating names and metrics that the
+    # composer's generic node list often misses; a graph with five nodes but
+    # four real relations is better than six loose terms with none.
+    ents = _kg_entities(ctx)
+    if ents:
+        have = {re.sub(r"\W+", "", str(e.get("surface") or "").lower()) for e in ents}
+        for n in nodes:
+            label = str(n.get("label") or n.get("name") or "")
+            key = re.sub(r"\W+", "", label.lower())
+            if not key or key in have:
+                continue
+            _typ = _five_type(label, n.get("type") or "")
+            if _kg_bad_label(label, _typ):
+                continue
+            ev0 = (n.get("evidence") or [{}])[0]
+            ents.append({"entity_id": n.get("id") or f"e{len(ents)+1:03d}",
+                         "type": _typ,
+                         "surface": label,
+                         "normalized": n.get("normalized") or re.sub(r"\W+", "", label.lower()),
+                         "paper_id": n.get("paper_id") or ev0.get("source_id") or "",
+                         "anchor": ev0.get("block") or n.get("block") or "",
+                         "quote": ev0.get("quote") or label[:200]})
+            have.add(key)
+        label_to_id: Dict[str, str] = {}
+        for e in ents:
+            for form in (e["surface"], e["normalized"]):
+                label_to_id.setdefault(str(form).lower(), e["entity_id"])
+        id_to_label = {e["entity_id"]: e["surface"] for e in ents}
+        rels = _kg_relations(ctx, ents)
+        edges = []
+        for r in rels:
+            src = label_to_id.get(str(r.get("subject") or "").lower(), r.get("subject"))
+            dst = label_to_id.get(str(r.get("object") or "").lower(), r.get("object"))
+            edges.append({"id": r["rel_id"],
+                          "source": id_to_label.get(src, src), "source_id": src,
+                          "target": id_to_label.get(dst, dst), "target_id": dst,
+                          "predicate": r["predicate"], "condition": r["condition"],
+                          "paper_id": r["paper_id"], "anchor": r["anchor"],
+                          "quote": r["quote"]})
+        ctx.payload["typed_nodes"] = nodes
+        ctx.payload["typed_edges"] = edges
+        ctx.payload["relations"] = edges
+        rows = [["entity_id", "type", "surface", "normalized", "paper_id", "anchor", "quote"]]
+        for e in ents:
+            rows.append([e["entity_id"], e["type"], e["surface"], e["normalized"],
+                         e["paper_id"], e["anchor"], e["quote"]])
+        return csv_text(rows)
+    if nodes:
+        rows = [["entity_id", "type", "surface", "normalized", "paper_id", "anchor", "quote"]]
+        for n in nodes:
+            ev0 = (n.get("evidence") or [{}])[0]
+            rows.append([n.get("id"), _five_type(n.get("label") or n.get("name") or "",
+                                                 n.get("type") or ""),
+                         n.get("label") or n.get("name"),
+                         n.get("normalized") or re.sub(r"\W+", "", str(n.get("label") or "").lower()),
+                         n.get("paper_id") or ev0.get("source_id") or "",
+                         ev0.get("block") or n.get("block") or "",
+                         ev0.get("quote") or n.get("quote") or (n.get("label") or "")])
+        return csv_text(rows)
     # Prefer the five-class extractor: payload nodes from some profiles use
     # lowercase schema types (method/property/term) and omit paper_id/quote,
     # which fails the entity contract even though counts look healthy.
@@ -1551,6 +1705,13 @@ def _relations(ctx: Ctx) -> str:
                              r["condition"], r["paper_id"], r["anchor"], r["quote"]])
             return csv_text(rows)
     edges = (ctx.payload or {}).get("edges") or []
+    rels = _kg_relations(ctx)
+    if rels and len(rels) >= len(edges):
+        rows = [["source", "relation", "target", "page", "block", "quote"]]
+        for r in rels:
+            rows.append([r["subject"], r["predicate"], r["object"], "",
+                         r["anchor"], r["quote"][:160]])
+        return csv_text(rows)
     if edges:
         rows = [["source", "relation", "target", "page", "block", "quote"]]
         for e in edges:
@@ -2001,6 +2162,8 @@ def _graph(ctx: Ctx, key: str = "graph") -> str:
     # Anything the typed pass already found arrives here as its own slice.
     nodes += [dict(n) for n in (p.get("typed_nodes") or []) if isinstance(n, dict)]
     edges += [dict(e) for e in (p.get("typed_edges") or []) if isinstance(e, dict)]
+    for e in edges:
+        e.setdefault("relation", e.get("predicate") or "related_to")
     for i, n in enumerate(nodes):
         n.setdefault("id", f"n{i + 1:03d}")
         n.setdefault("label", "")
@@ -2008,7 +2171,10 @@ def _graph(ctx: Ctx, key: str = "graph") -> str:
         n.setdefault("normalized", str(n.get("label") or "").strip().lower())
         n.setdefault("paper_id", "P1")
         n.setdefault("anchor", str(n.get("id")))
-        n.setdefault("quote", str(n.get("label") or ""))
+        # A node's quote is its label; the sentence-level quote lives in
+        # evidence[], not in every node record.  Keeping whole sentences here
+        # also made a node pass through unrelated words from the paper.
+        n["quote"] = str(n.get("label") or "")
     by_norm = {str(n.get("normalized") or n.get("label") or "").lower(): n["id"]
                for n in nodes}
     taken = {n["id"] for n in nodes}
@@ -2028,7 +2194,7 @@ def _graph(ctx: Ctx, key: str = "graph") -> str:
                               "type": e.get("type") or "entity",
                               "normalized": norm, "paper_id": e.get("paper_id") or "P1",
                               "anchor": e.get("anchor") or eid,
-                              "quote": e.get("quote") or ""})
+                              "quote": e.get("surface") or norm})
                 taken.add(eid)
                 if norm:
                     by_norm[norm] = eid
@@ -2056,7 +2222,7 @@ def _graph(ctx: Ctx, key: str = "graph") -> str:
                 continue
             seen.add(key)
             edges.append({"id": r.get("rel_id"), "source_id": sid, "target_id": tid,
-                          "predicate": r.get("predicate"),
+                          "predicate": r.get("predicate"), "relation": r.get("predicate"),
                           "condition": r.get("condition") or "",
                           "paper_id": r.get("paper_id") or "P1",
                           "anchor": r.get("anchor") or "", "quote": r.get("quote") or ""})
@@ -2249,6 +2415,21 @@ POLISH_RULES: List[Tuple[str, str, str, str]] = [
     (r"\bsolid ion conductor\b", "solid electrolyte", "term", "统一术语"),
     (r"\bsuperionic conductor\b", "solid electrolyte", "term", "统一术语"),
     (r"\bSSE\b", "solid electrolyte", "term", "缩写首次出现应给全称"),
+    # Chinese drafts: the same over-claim problem, but the English table never
+    # fires on it.  Keep the measured scope in the replacement instead of
+    # deleting the claim.
+    (r"完全证明", "在所测条件下表明", "tone",
+     "单组实验不能完全证明，限定到所测条件"),
+    (r"在任何条件下都不会失效", "在所测条件下未观察到失效", "tone",
+     "无长期/全条件数据，不能断言任何条件下不失效"),
+    (r"在任何条件下", "在所测条件下", "tone", "全条件断言降级为所测条件"),
+    (r"所有(?:涂层)?试样都", "本次所测试样", "tone", "把全称主语限定到本次试样"),
+    (r"所有(?:测试)?条件下均", "在所测条件下", "tone", "全条件比较降级为所测条件"),
+    (r"适用于全部", "适用于本次所测", "tone", "适用范围限定到本次材料"),
+    (r"已被实验完全证实", "在本次实验条件下得到支持", "tone",
+     "单次实验不能构成完全证实"),
+    (r"毫无疑问", "在所测数据范围内", "tone", "删除无法证伪的确定性表述"),
+    (r"显而易见", "从数据看", "tone", "删除预设读者共识的表述"),
 ]
 
 
@@ -2360,6 +2541,22 @@ GENERAL_EDIT_RULES: List[Tuple[str, str, str, str]] = [
     (r"\bet al\b(?!\.)", "et al.", "punctuation", "et al. 缺少句点"),
     (r"\be\.g\b(?!\.)", "e.g.", "punctuation", "e.g. 缺少句点"),
     (r"\bi\.e\b(?!\.)", "i.e.", "punctuation", "i.e. 缺少句点"),
+    # -- regular/irregular verb forms and agreement --------------------------
+    (r"\b(was|were|is|are|has been|have been)\s+(?:measure)\b",
+     r"\1 measured", "grammar", "be + 过去分词：measure 应为 measured"),
+    (r"\b(was|were|is|are|has been|have been)\s+(?:conduct)\b",
+     r"\1 conducted", "grammar", "be + 过去分词：conduct 应为 conducted"),
+    (r"\b(was|were|is|are|has been|have been)\s+(?:perform)\b",
+     r"\1 performed", "grammar", "be + 过去分词：perform 应为 performed"),
+    (r"\b(was|were|is|are|has been|have been)\s+(?:test)\b",
+     r"\1 tested", "grammar", "be + 过去分词：test 应为 tested"),
+    (r"\b(was|were|is|are|has been|have been)\s+(?:analy[sz]e)\b",
+     r"\1 analyzed", "grammar", "be + 过去分词：analyze 应为 analyzed"),
+    (r"\bresults?\s+suggests\b", "results suggest", "agreement",
+     "复数主语 results 用 suggest"),
+    (r"\bdata\s+shows\b", "data show", "agreement", "data 作复数用 show"),
+    (r"\bfindings?\s+indicates\b", "findings indicate", "agreement",
+     "复数主语 findings 用 indicate"),
 ]
 
 
@@ -2460,6 +2657,25 @@ def _unify_figure_refs(text: str) -> Tuple[str, List[Dict[str, str]]]:
                    "original": "Fig. n", "revised": "Figure n"}]
 
 
+def _soften_causal(text: str) -> Tuple[str, List[Dict[str, str]]]:
+    """Turn `A causes B to fall` into `A is associated with the fall in B`.
+
+    Only observational wording is changed; a sentence that names a controlled
+    experiment/mechanism keeps its causal verb.  This is the Chinese counterpart
+    of the English hedging table.
+    """
+    if re.search(r"(对照|随机|机制|实验验证|干预)", text):
+        return text, []
+    changes: List[Dict[str, str]] = []
+    for m in re.finditer(r"([^，。；]{2,20})(?:导致|致使)([^，。；]{2,20})(降低|下降|升高|增加|减少)", text):
+        before = m.group(0)
+        after = f"{m.group(1)}与{m.group(2)}{m.group(3)}相关"
+        changes.append({"type": "causal", "reason": "观察性数据不能断言因果，改为关联表述",
+                        "original": before, "revised": after})
+        text = text.replace(before, after)
+    return text, changes
+
+
 def _polish_apply(text: str, first_person: Optional[bool] = None
                   ) -> Tuple[str, List[Dict[str, str]]]:
     """Apply the edit tables to one sentence.
@@ -2488,6 +2704,8 @@ def _polish_apply(text: str, first_person: Optional[bool] = None
                 changes.append({"type": kind, "reason": reason,
                                 "original": m.group(0), "revised": after or "(删除)"})
             text = re.sub(rx, repl, text, flags=re.I)
+    text, causal = _soften_causal(text)
+    changes.extend(causal)
     if first_person is None:
         first_person = _first_person(text)
     text, passive = _activate_passive(text, first_person)
@@ -2767,6 +2985,11 @@ def _revised(ctx: Ctx) -> str:
         return text
     if ctx.profile == "polish" and re.search(r"术语统一|term_policy", task, re.I):
         text = _polish_term_unification(ctx)
+        # Term unification answers only half of this task: the same manuscript
+        # also carries absolute claims ("完全证明", "任何条件下都不会失效").
+        # Run the tone/causal table on the unified text so revised.md honours
+        # both, not just the glossary.
+        text, _ = _polish_apply(text)
         ctx.payload["delivered_text"] = text
         return text
     txt = (ctx.payload or {}).get("revised_text")
@@ -2839,6 +3062,15 @@ def _changes(ctx: Ctx) -> str:
         for x in _polish_term_changes(ctx):
             rows.append([x.get("block"), x.get("page"), x.get("original"),
                          x.get("revised"), _change_type(x.get("type")), x.get("reason")])
+        fp = _doc_first_person(ctx.d)
+        for b in _paras(ctx.d):
+            if not _polish_para(b):
+                continue
+            revised, changes = _polish_apply(b["text"], fp)
+            for ch in changes:
+                rows.append([b["id"], b.get("page"),
+                             str(ch.get("original"))[:300], str(ch.get("revised"))[:300],
+                             _change_type(ch.get("type")), ch.get("reason")])
         return csv_text(rows)
     seen = set()
     for w in (ctx.payload or {}).get("rewrites") or []:
@@ -3039,6 +3271,9 @@ def _cite_theme(sentence: str, refs: List[Dict[str, Any]]) -> List[int]:
 
 
 def _manuscript_cited(ctx: Ctx) -> str:
+    provided = (ctx.payload or {}).get("manuscript_cited")
+    if isinstance(provided, str) and provided:
+        return provided
     text = ""
     for name, meta in (ctx.doc.get("materials") or {}).items():
         if re.search(r"manuscript|正文|draft", str(name), re.I):
@@ -3260,6 +3495,9 @@ def _cite_line(line: str, refs: List[Dict[str, Any]], author_year: bool = False)
 
 def _citation_placement(ctx: Ctx) -> str:
     task = str(getattr(ctx, "task", "") or "")
+    provided = (ctx.payload or {}).get("citation_rows") or []
+    if provided:
+        return csv_text(provided)
     if re.search(r"citation_placement|引用插入|干扰项", task, re.I):
         man = _manuscript_cited(ctx)
         body = re.split(r"\n\s*##?\s+References\b", man)[0]
@@ -3827,6 +4065,19 @@ def _gbt_tail(types: List[str], dois: List[tuple]) -> List[str]:
 
 
 def _refs_gbt(ctx: Ctx) -> str:
+    formatted = (ctx.payload or {}).get("formatted", {}).get("gb_t_7714") or []
+    payload_entries = (ctx.payload or {}).get("entries") or []
+    if formatted:
+        # The composed list already applied BibTeX overrides, duplicate
+        # removal and GB/T author truncation; re-parsing the .bib here would
+        # undo all three (W./J. titles, twin records, @misc shown as [J]).
+        out = ["# GB/T 7714—2015 顺序编码制", ""]
+        out += [f"[{i}] {x}" for i, x in enumerate(formatted, 1)]
+        if payload_entries:
+            out += _gbt_tail([str(e.get("type") or "J") for e in payload_entries],
+                             [(e.get("n") or i, e.get("doi"))
+                              for i, e in enumerate(payload_entries, 1)])
+        return "\n".join(out)
     entries = _bib_entries_raw(_material_text(ctx, r"\.bib$"))
     if not entries:
         refs = _refs_list(ctx)
@@ -4026,8 +4277,36 @@ def _citation_map(ctx: Ctx) -> str:
                 ["S5", "交换关联近似决定标签系统误差", "[6]", "文献"]]
         return csv_text(rows)
     rows = [["block", "citation", "quote"]]
+    # The draft is the delivered document; scanning only the input blocks
+    # missed [R1]-[R5] that were inserted while writing, so the map had a header
+    # and no rows even though intro_cited.md was full of citations.
+    paras = ((ctx.payload or {}).get("draft") or {}).get("paragraphs") or []
+    for i, p in enumerate(paras, 1):
+        text = str(p.get("text") or "")
+        for sent in re.split(r"(?<=[。！？.!?])\s*", text):
+            for m in re.finditer(r"\[(R?\d{1,3})\]", sent):
+                ref = m.group(1)
+                # The anchor must name a real input block.  `p02-prior_work`
+                # was a composed paragraph id and could not be checked by a
+                # reviewer; find the block that actually carries [Rn] and quote
+                # the sentence that carries it.
+                _anchor, _quote = "", sent.strip()
+                for b in ctx.d.get("blocks", []):
+                    if b.get("type") in {"heading", "reference"}:
+                        continue
+                    if not re.search(r"\[" + re.escape(ref) + r"\]", b.get("text") or ""):
+                        continue
+                    _anchor = str(b.get("id") or "")
+                    _src = re.split(r"(?<=[。！？.!?])\s*", str(b.get("text") or ""))
+                    _quote = next((x.strip() for x in _src
+                                   if re.search(r"\[" + re.escape(ref) + r"\]", x)), _quote)
+                    break
+                rows.append([_anchor or f"p{i:02d}-{p.get('role') or 'paragraph'}",
+                             ref, _quote[:240]])
+    if len(rows) > 1:
+        return csv_text(rows)
     for b in ctx.d.get("blocks", []):
-        for m in re.finditer(r"\[(\d{1,3})\]", b.get("text", "")):
+        for m in re.finditer(r"\[([R]?\d{1,3})\]", b.get("text", "")):
             rows.append([b["id"], m.group(1), b["text"][:200]])
     return csv_text(rows)
 
@@ -4038,6 +4317,13 @@ def _related_work(ctx: Ctx) -> str:
     draft = ((ctx.payload or {}).get("draft") or {})
     prior = next((p.get("text") for p in (draft.get("paragraphs") or [])
                   if p.get("role") == "prior_work" and p.get("text")), "")
+    lim_by_ref = {}
+    for b in ctx.d.get("blocks", []):
+        txt = str(b.get("text") or "")
+        for ref in re.findall(r"\[(R?\d{1,3})\]", txt):
+            lm = re.search(r"局限[：:]\s*([^。；]+)", txt)
+            if lm:
+                lim_by_ref.setdefault(ref, lm.group(1).strip())
     for g in groups:
         name = g.get("theme") or g.get("name") or g.get("section") if isinstance(g, dict) else str(g)
         out.append(f"## {name}")
@@ -4047,6 +4333,14 @@ def _related_work(ctx: Ctx) -> str:
             items = g.get("items") if isinstance(g, dict) else []
             for it in (items or [])[:6]:
                 out.append(f"- {it.get('text') or it.get('gist') if isinstance(it, dict) else it}")
+        _seen_refs = []
+        _gtext = str(g.get("paragraph") or "") if isinstance(g, dict) else ""
+        for ref in re.findall(r"\[(R?\d{1,3})\]", _gtext):
+            if ref not in _seen_refs:
+                _seen_refs.append(ref)
+        for ref in _seen_refs:
+            if ref in lim_by_ref:
+                out.append(f"- [{ref}] 局限：{lim_by_ref[ref]}")
         out.append("")
     rw = _read_input(ctx, r"related[_-]?works?\.md")
     clean = [l.strip().lstrip("-* ") for l in rw.splitlines()
@@ -4318,7 +4612,21 @@ def _parse_quantities(line: str) -> List[Tuple[str, str, str]]:
                                   "mix", "stir", "heat", "hold", "cool", "measure",
                                   "sample", "use", "with", "and", "was", "were"}:
             continue
+        # "epoxy resin 60 g" also matches the suffix "resin"; a lowercase word
+        # glued to a preceding word is a fragment of a longer reagent name.
+        pre = line[:m.start()].rstrip()
+        if pre and pre[-1].isalpha() and m.group(1)[:1].islower():
+            continue
         out.append((m.group(1), f"{m.group(2)} {m.group(3)}", m.group(3)))
+    # Multi-word reagent names: "E-51 epoxy resin 60 g" must keep the identity,
+    # not truncate it to "E-51".  Read up to four words before the quantity.
+    for m in re.finditer(r"([A-Za-z][A-Za-z0-9()\-]*(?:\s+[A-Za-z][A-Za-z0-9()\-]*){1,3})\s+"
+                         r"([0-9]+(?:[.,][0-9]+)?)\s*(g|mg|kg|mL|L|mol)\b", line):
+        name = m.group(1).strip()
+        if re.search(r"\b(?:weigh|weight|add|mix|stir|heat|hold|cool|measure|sample)\b",
+                     name, re.I):
+            continue
+        out.append((name, f"{m.group(2)} {m.group(3)}", m.group(3)))
     # Protocol logs often use "Weigh 5.0 g carrier" (quantity before the noun),
     # not the chemistry-paper "Li2S 0.92 g" order.  Capture that shape too.
     for m in re.finditer(r"([0-9]+(?:[.,][0-9]+)?)\s*(g|mg|kg|mL|L|mol)\s+"
@@ -4328,6 +4636,20 @@ def _parse_quantities(line: str) -> List[Tuple[str, str, str]]:
         if name.lower() in {"and", "then", "at", "for", "the"}:
             continue
         out.append((name, f"{m.group(1)} {m.group(2)}", m.group(2)))
+    # Chinese log: "称取蜡质玉米淀粉 120 g" / "加入 80 mL 蒸馏水".
+    for m in re.finditer(r"(?:称取|称量|量取|加入|投加|倒入|取)\s*"
+                         r"([\u4e00-\u9fffA-Za-z0-9%（）()\-]{2,25}?)\s*"
+                         r"([0-9]+(?:[.,][0-9]+)?)\s*(g|mg|kg|mL|L|mol)", line):
+        out.append((m.group(1).strip(), f"{m.group(2)} {m.group(3)}", m.group(3)))
+    for m in re.finditer(r"([0-9]+(?:[.,][0-9]+)?)\s*(g|mg|kg|mL|L|mol)\s*"
+                         r"(?:的)?\s*([\u4e00-\u9fff]{2,20})", line):
+        name = m.group(3).strip()
+        if re.search(r"(溶液|体系|水|中|里)", name):
+            continue
+        out.append((name, f"{m.group(1)} {m.group(2)}", m.group(2)))
+    # Mesh size: "过 100 目筛" has no g/mL unit but is a real method parameter.
+    for m in re.finditer(r"([0-9]+(?:\.[0-9]+)?)\s*目", line):
+        out.append(("筛目", f"{m.group(1)} 目", "目"))
     return out
 
 
@@ -4505,33 +4827,55 @@ def _step_condition(st: Dict[str, Any]) -> str:
 
 
 def _materials_csv(ctx: Ctx) -> str:
-    rows = [["item", "spec", "quantity", "source_in_log"]]
+    rows = [["item", "spec", "quantity", "source_in_log", "group"]]
     raw = _log_text(ctx)
-    seen = set()
-    for line in raw.splitlines():
-        for name, qty, unit in _parse_quantities(line):
-            if name in seen:
+    # Reagent lists often sit in a second file (`reagents.md`), not the log.
+    # Read every material file so a recipe's identities and groups survive.
+    texts = [raw]
+    for name, meta in (ctx.doc.get("materials") or {}).items():
+        if re.search(r"(reagent|配方|试剂|materials|chemicals)", str(name), re.I):
+            texts.append(str(meta.get("text") or ""))
+    for body in texts:
+        group = ""
+        seen = set()
+        for line in body.splitlines():
+            txt = line.strip()
+            if not txt:
                 continue
-            seen.add(name)
-            rows.append([name, qty, "1", line.strip()[:120]])
-        if re.search(r"球磨罐", line):
-            m = re.search(r"(ZrO2|[A-Za-z0-9]+)\s*([0-9.]+\s*(?:mL|L))", line)
-            spec = m.group(2) if m else ""
-            rows.append(["球磨罐", spec, "1", line.strip()[:120]])
-        if re.search(r"球", line) and re.search(r"[0-9]+\s*个", line):
-            n = re.search(r"([0-9]+)\s*个", line)
-            d = re.search(r"（([0-9.]+\s*mm)）|\(([0-9.]+\s*mm)\)", line)
-            rows.append(["研磨球", (d.group(1) or d.group(2)) if d else "", n.group(1), line.strip()[:120]])
-        if re.search(r"直径", line):
-            d = re.search(r"直径\s*([0-9.]+\s*mm)", line)
-            if d:
-                rows.append(["压片模具", d.group(1), "1", line.strip()[:120]])
-    for eq in ("球磨机", "压片机", "管式炉", "电化学工作站"):
-        if re.search(eq.replace("机", ""), raw):
-            rows.append([eq, "—", "1", "实验记录"])
+            if txt.startswith("#"):
+                if len(txt) > 40 and not txt.startswith("##"):
+                    continue
+                gm = re.search(r"[（(]([^）)]*组[^）)]*)[)）]", txt)
+                if gm:
+                    group = gm.group(1).strip()
+                else:
+                    group = re.sub(r"[#\s]+", " ", txt).strip()
+                    group = re.sub(r"[（(].*?[)）]", "", group).strip()
+                continue
+            for name, qty, unit in _parse_quantities(txt):
+                if (name, qty) in seen:
+                    continue
+                seen.add((name, qty))
+                rows.append([name, unit or "—", qty, txt[:120], group or "未分组"])
+            if re.search(r"球磨罐", txt):
+                m = re.search(r"(ZrO2|[A-Za-z0-9]+)\s*([0-9.]+\s*(?:mL|L))", txt)
+                spec = m.group(2) if m else ""
+                rows.append(["球磨罐", spec, "1", txt[:120], group or "未分组"])
+            if re.search(r"球", txt) and re.search(r"[0-9]+\s*个", txt):
+                n = re.search(r"([0-9]+)\s*个", txt)
+                d = re.search(r"（([0-9.]+\s*mm)）|\(([0-9.]+\s*mm)\)", txt)
+                rows.append(["研磨球", (d.group(1) or d.group(2)) if d else "", n.group(1),
+                             txt[:120], group or "未分组"])
+            if re.search(r"直径", txt):
+                d = re.search(r"直径\s*([0-9.]+\s*mm)", txt)
+                if d:
+                    rows.append(["压片模具", d.group(1), "1", txt[:120], group or "未分组"])
+    for eq in ("球磨机", "压片机", "管式炉", "电化学工作站", "盐雾箱", "恒温振荡器"):
+        if re.search(eq.replace("机", "").replace("箱", ""), " ".join(texts)):
+            rows.append([eq, "—", "1", "实验记录", "设备"])
     if len(rows) == 1:
         for p in (ctx.payload or {}).get("parameters") or []:
-            rows.append([p.get("name"), p.get("value"), "1", p.get("block")])
+            rows.append([p.get("name"), "—", p.get("value"), p.get("block"), "未分组"])
     return csv_text(rows)
 
 
