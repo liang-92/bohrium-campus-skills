@@ -117,6 +117,11 @@ def _apply_fill(payload: Dict[str, Any], fill: Dict[str, Any]) -> Dict[str, Any]
             applied += 1
     segs_all = payload.get("segments") or []
     left = sum(1 for s in segs_all if not (s.get("translation") or "").strip())
+    # The contract field has to move with the fill, otherwise it keeps naming
+    # segments that were translated in this very run.
+    if "untranslated" in payload:
+        payload["untranslated"] = [s.get("seg") for s in segs_all
+                                   if not (s.get("translation") or "").strip()]
     return {"applied": applied, "segments": len(segs_all), "untranslated": left}
 
 

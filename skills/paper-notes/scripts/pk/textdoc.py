@@ -180,10 +180,24 @@ def _table_from_rows(rows: List[List[str]], n: int, source: str) -> Dict[str, An
         rows = [[""]]
     width = max(len(r) for r in rows)
     rows = [r + [""] * (width - len(r)) for r in rows]
+    header = rows[0]
+    # `rows` is the data slice everywhere else in the pipeline (the PDF reader
+    # writes it that way and the contract derives `n_rows` from header+rows).
+    # Keeping the header in here made a markdown table render its column names
+    # twice and handed the knowledge graph "Membrane" as a data row.
+    data = [r for r in rows[1:] if [_f(c) for c in r] != [_f(c) for c in header]]
     return {"id": f"t{n}", "page": 1, "bbox": None, "caption": "",
-            "caption_block": None, "header": rows[0], "rows": rows,
-            "markdown": "\n".join("| " + " | ".join(r) + " |" for r in rows),
-            "n_rows": len(rows), "n_cols": width, "source": source}
+            "caption_block": None, "header": header, "header_rows": [header],
+            "data_rows": data, "rows": data, "rows_all": [header] + data,
+            "markdown": "\n".join(
+                ["| " + " | ".join(header) + " |",
+                 "|" + "|".join(["---"] * width) + "|"] +
+                ["| " + " | ".join(r) + " |" for r in data]),
+            "n_rows": len(data), "n_cols": width, "source": source}
+
+
+def _f(cell: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(cell or "").lower())
 
 
 def _bib_fields(body: str) -> Dict[str, str]:

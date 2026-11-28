@@ -18,7 +18,7 @@ import json
 import os
 import re
 import shutil
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import sources, textdoc
 
@@ -2252,26 +2252,253 @@ POLISH_RULES: List[Tuple[str, str, str, str]] = [
 ]
 
 
-def _polish_apply(text: str) -> Tuple[str, List[Dict[str, str]]]:
+# The table above grew case by case.  The rules below are the general part: they
+# fire on ordinary academic prose of any field, which is what a "polish this
+# paper" task actually hands the skill.  Without them a clean manuscript came
+# back byte-identical and `changes.csv` held only its header.
+GENERAL_EDIT_RULES: List[Tuple[str, str, str, str]] = [
+    # -- redundancy: the phrase adds no information over its replacement -----
+    (r"\bin order to\b", "to", "structure", "in order to 与 to 同义，删去冗余部分"),
+    (r"\bdue to the fact that\b", "because", "structure", "due to the fact that 冗赘，直接用 because"),
+    (r"\bowing to the fact that\b", "because", "structure", "owing to the fact that 冗赘，直接用 because"),
+    (r"\bin spite of the fact that\b", "although", "structure", "in spite of the fact that 冗赘，改用 although"),
+    (r"\bthe fact that\b", "that", "structure", "the fact that 多为冗余外壳，直接用 that"),
+    (r"\bit (?:is|was) (?:important|necessary|essential) to note that\b", "",
+     "structure", "提示读者注意的套话，删去后命题不变"),
+    (r"\bit (?:should|must) be (?:noted|emphasised|emphasized) that\b", "",
+     "structure", "套话，删去后命题不变"),
+    (r"\bit is worth noting that\b", "", "structure", "套话，删去后命题不变"),
+    (r"^Note that\s+", "", "structure", "句首祈使套话，删去后命题不变"),
+    (r"\ba (?:large|significant|considerable) number of\b", "many",
+     "structure", "a large number of 冗赘，直接用 many"),
+    (r"\ba number of\b", "several", "structure", "a number of 语义含糊，改为 several"),
+    (r"\ba total of\b", "", "structure", "a total of 不增加信息，删去后数字仍完整"),
+    (r"\bfor the purpose of\b", "for", "structure", "for the purpose of 冗赘，直接用 for"),
+    (r"\bwith the aim of\b", "to", "structure", "with the aim of 与 to 同义"),
+    (r"\bin the event that\b", "if", "structure", "in the event that 冗赘，改用 if"),
+    (r"\bprior to\b", "before", "structure", "prior to 可用更简的 before"),
+    (r"\bsubsequent to\b", "after", "structure", "subsequent to 可用更简的 after"),
+    (r"\bin close proximity to\b", "near", "structure", "in close proximity to 冗赘"),
+    (r"\bat the present time\b", "currently", "structure", "at the present time 冗赘"),
+    (r"\bwith respect to\b", "for", "structure", "with respect to 冗赘"),
+    (r"\bin the case of\b", "for", "structure", "in the case of 冗赘"),
+    (r"\bon the basis of\b", "from", "structure", "on the basis of 冗赘"),
+    (r"\bas a consequence of\b", "because of", "structure", "as a consequence of 冗赘"),
+    (r"\bin the absence of\b", "without", "structure", "in the absence of 冗赘"),
+    (r"\bhas the ability to\b", "can", "structure", "has the ability to 冗赘，改用情态动词"),
+    (r"\bis able to\b", "can", "structure", "is able to 冗赘，改用情态动词"),
+    (r"\bare able to\b", "can", "structure", "are able to 冗赘，改用情态动词"),
+    (r"\bhas the potential to\b", "can", "tone", "has the potential to 弱化且冗赘"),
+    (r"\bmake use of\b", "use", "structure", "make use of 冗赘"),
+    (r"\bmakes use of\b", "uses", "structure", "make use of 冗赘"),
+    (r"\bmade use of\b", "used", "structure", "make use of 冗赘"),
+    (r"\butili[sz]e\b", "use", "tone", "utilize 为 use 的装饰性长词"),
+    (r"\butili[sz]es\b", "uses", "tone", "utilize 为 use 的装饰性长词"),
+    (r"\butili[sz]ed\b", "used", "tone", "utilize 为 use 的装饰性长词"),
+    (r"\bend result\b", "result", "structure", "end result 同义反复"),
+    (r"\bfirst and foremost\b", "first", "structure", "first and foremost 同义反复"),
+    (r"\beach and every\b", "every", "structure", "each and every 同义反复"),
+    (r"\bvarious different\b", "various", "structure", "various 与 different 重复"),
+    (r"\bbasic fundamentals?\b", "fundamentals", "structure", "basic 与 fundamentals 重复"),
+    (r"\bpast history\b", "history", "structure", "past 与 history 重复"),
+    (r"\bcurrently at present\b", "currently", "structure", "两个时间副词重复"),
+    (r"\bjointly together\b", "jointly", "structure", "jointly 与 together 重复"),
+    (r"\bcombine together\b", "combine", "structure", "combine 已含 together 之义"),
+    (r"\bmerge together\b", "merge", "structure", "merge 已含 together 之义"),
+    (r"\breturn back\b", "return", "structure", "return 已含 back 之义"),
+    (r"\brepeat(?:ed)? again\b", "repeated", "structure", "repeat 已含 again 之义"),
+    (r"\bvery unique\b", "unique", "tone", "unique 不可分级"),
+    (r"\bmost optimal\b", "optimal", "tone", "optimal 已是最高级"),
+    (r"\bmore better\b", "better", "grammar", "比较级重复"),
+    (r"\bcan potentially\b", "can", "tone", "can 与 potentially 语义叠加"),
+    # -- nominalisation: verb buried in a noun phrase ------------------------
+    (r"\bperformed an? analysis of\b", "analyzed", "structure", "名词化改为动词"),
+    (r"\bperformed an? (?:evaluation|assessment) of\b", "evaluated", "structure", "名词化改为动词"),
+    (r"\bperformed an? (?:investigation|examination) of\b", "investigated",
+     "structure", "名词化改为动词"),
+    (r"\bperformed an? comparison (?:of|between)\b", "compared", "structure", "名词化改为动词"),
+    (r"\bconducted an? analysis of\b", "analyzed", "structure", "名词化改为动词"),
+    (r"\bconducted an? (?:evaluation|assessment) of\b", "evaluated", "structure", "名词化改为动词"),
+    (r"\bconducted an? (?:investigation|examination) of\b", "investigated",
+     "structure", "名词化改为动词"),
+    (r"\bconducted an? comparison (?:of|between)\b", "compared", "structure", "名词化改为动词"),
+    (r"\bcarried out an? analysis of\b", "analyzed", "structure", "名词化改为动词"),
+    (r"\bmakes? a comparison (?:of|between)\b", "compares", "structure", "名词化改为动词"),
+    (r"\bprovides? a description of\b", "describes", "structure", "名词化改为动词"),
+    (r"\bis an indication of\b", "indicates", "structure", "名词化改为动词"),
+    (r"\bis indicative of\b", "indicates", "tone", "is indicative of 冗赘"),
+    (r"\bplays? an important role in\b", "is central to", "tone", "plays a role in 为弱断言套话"),
+    # -- register: spoken forms in a written manuscript ----------------------
+    (r"\ba lot of\b", "many", "tone", "口语化数量表达"),
+    (r"\blots of\b", "many", "tone", "口语化数量表达"),
+    (r"\bfind out\b", "determine", "tone", "口语化动词短语"),
+    (r"\blook into\b", "investigate", "tone", "口语化动词短语"),
+    (r"\bput forward\b", "propose", "tone", "口语化动词短语"),
+    (r"\bmake sure\b", "ensure", "tone", "口语化动词短语"),
+    (r"\bshow up\b", "appear", "tone", "口语化动词短语"),
+    (r"\bgo up\b", "increase", "tone", "口语化动词短语"),
+    (r"\bgo down\b", "decrease", "tone", "口语化动词短语"),
+    (r"\bvery\s+", "", "tone", "程度副词不增加信息量，删去后命题不变"),
+    (r"\breally\s+", "", "tone", "口语强调，删去后命题不变"),
+    (r"\bextremely\s+", "", "tone", "程度副词不增加信息量，删去后命题不变"),
+    (r"\bquite\b\s*", "", "tone", "程度副词不增加信息量"),
+    (r"\bbasically\b\s*", "", "tone", "口语填充词"),
+    (r"\bactually\b\s*", "", "tone", "口语填充词"),
+    # "clearly" is only an overclaim when it props up a result; as an adverb of
+    # manner ("a clearly defined boundary") deleting it changes the meaning.
+    (r"^Clearly,\s*", "", "tone", "clearly 预设结论强度，删去"),
+    (r"\b(data|results|evidence|findings) clearly\s+", r"\1 ",
+     "tone", "clearly 预设结论强度，删去后由数据本身说话"),
+    # -- hedging: never strengthen, only soften unsupported claims -----------
+    (r"\bdemonstrates? conclusively\b", "indicates", "tone", "单篇数据不能 conclusive"),
+    (r"\bconclusively (?:demonstrated|shown|proved)\b", "indicated", "tone", "单篇数据不能 conclusive"),
+    (r"\bis proven\b", "is supported", "tone", "prove 降级为 support"),
+    (r"\bwe prove\b", "we show", "tone", "prove 降级为 show"),
+    # -- terminology consistency and mechanical forms ------------------------
+    (r"\bdata sets\b", "datasets", "term", "data set 统一为 dataset"),
+    (r"\bdata set\b", "dataset", "term", "data set 统一为 dataset"),
+    (r"\bet al\b(?!\.)", "et al.", "punctuation", "et al. 缺少句点"),
+    (r"\be\.g\b(?!\.)", "e.g.", "punctuation", "e.g. 缺少句点"),
+    (r"\bi\.e\b(?!\.)", "i.e.", "punctuation", "i.e. 缺少句点"),
+]
+
+
+def _sentence_pieces(text: str) -> List[str]:
+    """Sentences with their terminating punctuation, whitespace collapsed."""
+    body = re.sub(r"[ \t]{2,}", " ", str(text or "").strip())
+    return [p.strip() for p in re.split(r"(?<=[.!?])\s+", body) if p.strip()]
+
+
+# A coordinating boundary is the only place a long sentence can be cut without
+# rewriting its content: both halves already have their own subject and verb.
+_SPLIT_BOUNDARY = re.compile(
+    r";\s+|,\s+(?:and|but|so|yet)\s+|,\s+(?:while|whereas)\s+", re.I)
+
+
+def _split_long_sentences(text: str, limit: int = 30) -> Tuple[str, List[Dict[str, str]]]:
+    """Cut over-long sentences at a coordinating boundary, adding no words."""
+    changes: List[Dict[str, str]] = []
+    out: List[str] = []
+    for sent in _sentence_pieces(text):
+        n = len(sent.split())
+        if n <= limit:
+            out.append(sent)
+            continue
+        cut = None
+        for m in _SPLIT_BOUNDARY.finditer(sent):
+            frac = m.start() / max(1, len(sent))
+            head = sent[:m.start()]
+            # A cut in the first or last quarter leaves a stump; a cut inside
+            # "(Newport et al., 1977; Fernald et al., 1989)" breaks the citation.
+            if not (0.25 <= frac <= 0.78):
+                continue
+            if head.count("(") != head.count(")") or head.count("[") != head.count("]"):
+                continue
+            cut = m
+            break
+        if not cut:
+            out.append(sent)
+            continue
+        head = sent[:cut.start()].rstrip(" ,;")
+        tail = sent[cut.end():].strip()
+        if len(head.split()) < 6 or len(tail.split()) < 5:
+            out.append(sent)
+            continue
+        joined = head + ". " + tail[:1].upper() + tail[1:]
+        changes.append({"type": "structure",
+                        "reason": f"长句（{n} 词）在并列处拆为两句，未增删事实",
+                        "original": sent[:240], "revised": joined[:240]})
+        out.append(joined)
+    return " ".join(out), changes
+
+
+def _first_person(text: str) -> bool:
+    """True when the manuscript already speaks as ``we``."""
+    return bool(re.search(r"\b(?:we|our|us)\b", text, re.I))
+
+
+def _doc_first_person(doc: Dict[str, Any]) -> bool:
+    return _first_person(" ".join(str(b.get("text") or "")
+                                  for b in (doc.get("blocks") or [])
+                                  if b.get("type") == "body"))
+
+
+PASSIVE_ACTIVE_RULES: List[Tuple[str, str, str, str]] = [
+    # Only sentence-initial impersonal frames: mid-sentence the replacement
+    # would have to re-case the verb and the subject, which is a rewrite.
+    (r"^It (?:was|is|has been) (?:found|observed|shown) that\b", "We found that",
+     "structure", "被动空主语改主动，施动者明确为作者"),
+    (r"^It (?:was|is|has been) (?:demonstrated|established) that\b", "We showed that",
+     "structure", "被动空主语改主动，施动者明确为作者"),
+    (r"^It can be seen (?:from|in) (Table|Figure|Fig\.)\s*(\d+[a-z]?) that\b",
+     r"\1 \2 shows that", "structure", "It can be seen 为冗余被动，改为主语直陈"),
+    (r"\b(?:was|were) (performed|conducted|carried out|measured|evaluated) by (?:us|the authors)\b",
+     r"we \1", "structure", "被动改主动，保留原动词与时态"),
+]
+
+
+def _activate_passive(text: str, first_person: bool) -> Tuple[str, List[Dict[str, str]]]:
+    changes: List[Dict[str, str]] = []
+    if not first_person:
+        return text, changes
+    for rx, repl, kind, reason in PASSIVE_ACTIVE_RULES:
+        for m in list(re.finditer(rx, text, re.I))[:20]:
+            changes.append({"type": kind, "reason": reason,
+                            "original": m.group(0), "revised": m.expand(repl) if "\\" in repl else repl})
+        text = re.sub(rx, repl, text, flags=re.I)
+    return text, changes
+
+
+def _unify_figure_refs(text: str) -> Tuple[str, List[Dict[str, str]]]:
+    """One form for figure references; only when the text mixes both."""
+    if not (re.search(r"\bFig\.\s*\d", text) and re.search(r"\bFigure\s+\d", text)):
+        return text, []
+    n = len(re.findall(r"\bFig\.\s*(?=\d)", text))
+    text = re.sub(r"\bFig\.\s*(?=\d)", "Figure ", text)
+    return text, [{"type": "terminology",
+                   "reason": f"同一文稿混用 Fig. 与 Figure，统一为 Figure（{n} 处）",
+                   "original": "Fig. n", "revised": "Figure n"}]
+
+
+def _polish_apply(text: str, first_person: Optional[bool] = None
+                  ) -> Tuple[str, List[Dict[str, str]]]:
+    """Apply the edit tables to one sentence.
+
+    ``first_person`` says whether the manuscript already speaks as ``we``; the
+    composer knows it per document, so a sentence without a pronoun can still
+    have its impersonal frame rewritten.
+    """
     changes = []
     seen = set()
     original_started_upper = bool((text or "").lstrip()[:1].isupper())
-    for rx, repl, kind, reason in POLISH_RULES:
-        matches = list(re.finditer(rx, text, re.I))
-        if not matches:
-            continue
-        for m in matches[:20]:
-            key = (m.group(0), repl)
-            if key in seen:
+    for table in (POLISH_RULES, GENERAL_EDIT_RULES):
+        for rx, repl, kind, reason in table:
+            matches = list(re.finditer(rx, text, re.I))
+            if not matches:
                 continue
-            seen.add(key)
-            # One row per distinct edit, so changes.csv cannot claim fewer
-            # edits than the text actually received.
-            changes.append({"type": kind, "reason": reason,
-                            "original": m.group(0), "revised": repl or "(删除)"})
-        text = re.sub(rx, repl, text, flags=re.I)
+            for m in matches[:20]:
+                key = (m.group(0), repl)
+                if key in seen:
+                    continue
+                seen.add(key)
+                # One row per distinct edit, so changes.csv cannot claim fewer
+                # edits than the text actually received.  A replacement with a
+                # backreference is expanded so the CSV shows the real after-text.
+                after = m.expand(repl) if "\\" in repl else repl
+                changes.append({"type": kind, "reason": reason,
+                                "original": m.group(0), "revised": after or "(删除)"})
+            text = re.sub(rx, repl, text, flags=re.I)
+    if first_person is None:
+        first_person = _first_person(text)
+    text, passive = _activate_passive(text, first_person)
+    changes.extend(passive)
+    text, split = _split_long_sentences(text)
+    changes.extend(split)
+    text, figs = _unify_figure_refs(text)
+    changes.extend(figs)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\s+([,.;:])", r"\1", text)
+    text = re.sub(r",(?=[^\s\d])", ", ", text)
     text = re.sub(r"^\s*[,;:]\s*", "", text)
     if original_started_upper and text[:1].islower():
         text = text[0].upper() + text[1:]
@@ -2576,7 +2803,7 @@ def _revised(ctx: Ctx) -> str:
             if lost or len(text.split()) < 0.6 * len(original.split()):
                 text = None
         if not text:
-            text, _ = _polish_apply(original)
+            text, _ = _polish_apply(original, _doc_first_person(ctx.d))
         if text and text[0].islower():
             text = text[0].upper() + text[1:]
         out.append(text)
@@ -2615,22 +2842,27 @@ def _changes(ctx: Ctx) -> str:
         return csv_text(rows)
     seen = set()
     for w in (ctx.payload or {}).get("rewrites") or []:
-        if not (w.get("revised") or "").strip():
+        before = w.get("before") or w.get("original", "")
+        after = w.get("after") or w.get("revised", "")
+        if not str(after).strip():
             continue
-        if len(str(w.get("original") or "")) > 180:
+        if not w.get("before") and len(str(w.get("original") or "")) > 180:
             # A whole-paragraph "rewrite" is a summary, not one change record;
             # the rule-level rows below are the traceable edits.
             continue
-        key = (w.get("block"), w.get("original"))
+        key = (w.get("block"), before)
         if key in seen:
             continue
         seen.add(key)
-        rows.append([w.get("block"), w.get("page"), w.get("original", "")[:300],
-                     w.get("revised", "")[:300], _change_type(w.get("type")), w.get("reason")])
+        rows.append([w.get("block"), w.get("page"), str(before)[:300],
+                     str(after)[:300], _change_type(w.get("type")), w.get("reason")])
+    if len(rows) > 1:
+        return csv_text(rows)
+    fp = _doc_first_person(ctx.d)
     for b in _paras(ctx.d):
         if not _polish_para(b):
             continue
-        revised, changes = _polish_apply(b["text"])
+        revised, changes = _polish_apply(b["text"], fp)
         if revised == b["text"]:
             continue
         for ch in changes:
@@ -4364,13 +4596,18 @@ def _setup_table(ctx: Ctx) -> str:
             rows.append([x.get("item"), x.get("value"), x.get("source"),
                          x.get("section") or "", x.get("source_anchor") or ""])
         return csv_text(rows)
-    rows = [["parameter", "value", "block", "section", "source_anchor"]]
+    # The gate (paperkit/quality.py) audits params.csv by the contract column
+    # names name/value/unit/target/source/conflict; writing "parameter" and
+    # "block" instead made every non-ML case "missing column name".
+    rows = [["name", "value", "unit", "target", "source", "conflict"]]
     for st in _parsed_steps(ctx):
         rows.append([f"{st['id']} {st['name']}", "；".join(st["lines"]),
-                     st["lines"][0][:40], "", st["lines"][0][:40]])
+                     "", "", st["lines"][0][:40], "no"])
     for p in (ctx.payload or {}).get("parameters") or []:
-        rows.append([p.get("name"), p.get("value"), p.get("block"),
-                     p.get("section") or "", p.get("source_anchor") or ""])
+        rows.append([p.get("name"), p.get("value"), p.get("unit") or "",
+                     p.get("target") or "",
+                     p.get("section") or p.get("block") or p.get("source") or "",
+                     p.get("conflict") or "no"])
     return csv_text(rows)
 
 

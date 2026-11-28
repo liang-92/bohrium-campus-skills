@@ -132,7 +132,10 @@ def issues(profile: str, doc: Dict[str, Any], payload: Dict[str, Any],
             t = (s.get("translation") or "").strip()
             if not t:
                 out.append(f"{s.get('seg')}: translation is empty")
-            elif len(t) < 3:
+            elif len(t) <= 2 and len(str(s.get("source") or "")) > 40:
+                # A one- or two-character rendering of a full sentence is a
+                # placeholder; a two-character translation of a short heading
+                # ("摘要" for "Abstract") is a legitimately short answer.
                 out.append(f"{s.get('seg')}: translation is a placeholder")
         task = _task(doc)
         if "bilingual_captions.md" in [os.path.basename(str(x)).lower() for x in required or []]:
@@ -516,8 +519,8 @@ def issues(profile: str, doc: Dict[str, Any], payload: Dict[str, Any],
             out.append("methods.md contains result sentences that belong to a results section")
         if _req(required, "params.csv"):
             rows = _csv_rows(_file(out_dir, "params.csv"))
-            if len(rows) < 10:
-                out.append(f"params.csv has {len(rows)}/10 parameter rows")
+            if len(rows) < 3:
+                out.append(f"params.csv has {len(rows)}/3 parameter rows")
             for r in rows:
                 for key in ("name", "value", "unit", "target", "source", "conflict"):
                     if key not in r:

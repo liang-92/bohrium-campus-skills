@@ -392,6 +392,10 @@ def build_blocks(pages: List[Dict[str, Any]], body_size: float) -> List[Dict[str
                 # layer character by character.  `text` is the cleaned view.
                 "text_raw": "\n".join(l["text"] for l in current),
                 "size": round(max(sizes) if sizes else body_size, 2),
+                # Per-line sizes: a references block can contain two overlapping
+                # text layers (9.5 pt citations + 10.5 pt body), and only the
+                # per-line value can separate them later.
+                "line_sizes": [round(float(l.get("size") or 0), 2) for l in current],
                 "bold": any(l.get("bold") for l in current),
                 "lines": len(current),
                 # Decision evidence: why this block starts where it does.

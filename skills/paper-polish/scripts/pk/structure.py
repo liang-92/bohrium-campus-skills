@@ -185,6 +185,11 @@ def merge_line_fragments(blocks: List[Dict[str, Any]], body_size: float) -> List
                 or (prev.get("section") or "") != (b.get("section") or ""):
             out.append(b)
             continue
+        # Two overlapping text layers (9.5 pt references + 10.5 pt body) read as
+        # one continuous sentence if the sizes are ignored.
+        if abs(float(prev.get("size") or 0) - float(b.get("size") or 0)) >= 0.8:
+            out.append(b)
+            continue
         left = (prev.get("text") or "").rstrip()
         right = (b.get("text") or "").lstrip()
         if not left or not right:
@@ -210,6 +215,23 @@ def merge_line_fragments(blocks: List[Dict[str, Any]], body_size: float) -> List
     return out
 
 
+def _is_affiliation_line(text: str) -> bool:
+    """A university/company address that the size heuristic mistakes for a heading."""
+    t = re.sub(r"\s+", " ", text or "").strip()
+    if not t:
+        return False
+    if re.search(r"\b(University|Universit[äé]t|Institute|Laboratory|Lab\b|Department|"
+                 r"College|School of|Faculty|Academy|Center for|Centre for|Inc\.|Ltd|GmbH|"
+                 r"Hospital|Corporation|Company)\b", t):
+        return True
+    if re.search(r",\s*(?:China|USA|United States|Japan|Germany|France|UK|Korea|India)\b", t) \
+            and re.search(r"\d{4,6}", t):
+        return True
+    if re.match(r"^[\d\s*∗†‡]+\s*[A-Z][a-z]+(?: [A-Z][a-z]+)*\s+(?:of|for)\b", t) and len(t.split()) >= 4:
+        return True
+    return False
+
+
 def build_sections(blocks: List[Dict[str, Any]], body_size: float) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Annotate blocks with section paths; return (sections, blocks)."""
     blocks = merge_heading_fragments(blocks)
@@ -219,7 +241,7 @@ def build_sections(blocks: List[Dict[str, Any]], body_size: float) -> Tuple[List
     sections: List[Dict[str, Any]] = []
     stack: List[Dict[str, Any]] = []
     for b in blocks:
-        if is_heading(b, body_size):
+        if is_heading(b, body_size) and not _is_affiliation_line(b["text"]):
             level = section_level(b, body_size)
             b["type"] = "heading"
             b["level"] = level
@@ -229,6 +251,10 @@ def build_sections(blocks: List[Dict[str, Any]], body_size: float) -> Tuple[List
                    "block": b["id"], "parent": stack[-1]["block"] if stack else None}
             sections.append(sec)
             stack.append(sec)
+        elif is_heading(b, body_size):
+            # A postal address typeset at heading size: demote it so composers
+            # that walk `type == heading` do not turn it into a section.
+            b["type"] = "body"
         path = " > ".join(s["title"] for s in stack) if stack else ""
         b["section"] = path
     return sections, blocks
@@ -1332,6 +1358,26 @@ def find_formulas(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _reference_text(block: Dict[str, Any]) -> str:
+    """Text of a bibliography block with overlapping body lines removed.
+
+    Some PDFs paste the body text on top of the reference list: the two text
+    layers share an x/y box and only differ in font size.  The block therefore
+    reads as citation fragments interleaved with prose.  Per-line sizes let us
+    keep the smaller layer, which is the bibliography.
+    """
+    raw = (block.get("text_raw") or "").splitlines()
+    sizes = block.get("line_sizes") or []
+    if raw and len(sizes) == len(raw):
+        usable = [s for s in sizes if s >= 7.0]
+        if usable and max(usable) - min(usable) >= 0.8:
+            base = min(usable)
+            keep = [ln for ln, sz in zip(raw, sizes) if sz <= base + 0.5]
+            if keep:
+                return " ".join(x.strip() for x in keep if x.strip())
+    return (block.get("text") or "").strip()
+
+
 def find_references(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     start = None
     for i, b in enumerate(blocks):
@@ -1358,6 +1404,15 @@ def find_references(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             candidates.append(b)
     if not candidates:
         return []
+    # When two text layers overlap, the larger font is the body pasted over the
+    # bibliography.  Use the font size of the numbered entries as the layer
+    # boundary and drop the larger layer.
+    _sizes = [float(b.get("size") or 0) for b in candidates
+              if re.match(r"^\s*\[\d{1,3}\]", (b.get("text") or "").strip()) and b.get("size")]
+    if _sizes:
+        _base = min(_sizes)
+        candidates = [b for b in candidates
+                      if not b.get("size") or float(b["size"]) <= _base + 0.8]
     numbered = len(re.findall(r"\[\d{1,3}\]", " ".join(b["text"] for b in candidates))) >= 2
     entries: List[Dict[str, Any]] = []
     if numbered:
@@ -1365,7 +1420,7 @@ def find_references(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # "[1] ... [2] ... [3] ...".  Split on the next number marker, not on
         # visual lines, or eight references become one.
         for b in candidates:
-            text = b["text"].strip()
+            text = _reference_text(b)
             for part in re.split(r"(?=\[\d{1,3}\])", text):
                 part = part.strip()
                 if not part:
@@ -1379,7 +1434,7 @@ def find_references(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     entries[-1]["block"] += f"+{b['id']}"
     else:
         for b in candidates:
-            text = b["text"].strip()
+            text = _reference_text(b)
             entries.append({"n": len(entries) + 1, "label": f"[{len(entries) + 1}]",
                             "text": text, "page": b["page"], "block": b["id"]})
     return entries
@@ -1416,6 +1471,8 @@ def names_from_author_line(text: str) -> List[str]:
     capitalised tokens is a name.
     """
     text = re.sub(r"\S+@\S+", " ", text)
+    text = re.sub(r"\^?\{[^}]*\}", " ", text)
+    text = re.sub(r"<sup>[^<]*</sup>", " ", text, flags=re.I)
     text = NAME_MARKERS.sub(" ", text)
     text = re.sub(r"\b(and|&)\b", " ", text)
     names: List[str] = []
@@ -1483,8 +1540,18 @@ def _title_from_lines(page: Dict[str, Any]) -> str:
             break
         if len(t) < 4 or len(t) > 260:
             continue
-        if started and y - last_y > 24:
+        # An author line carries superscript affiliation markers ("Chen^{1}")
+        # or footnote symbols; a two-line title is still a title, but the names
+        # below it are not.
+        if re.search(r"\^?\s*\{\s*\d|∗|†|‡", t) or re.search(r"\b\w+\s*\^\s*\d", t):
             break
+        if started and y - last_y > 42:
+            # A title starts flush at the top of the page, where the first
+            # line's bbox can even be negative; the gap to the second line is
+            # then large without meaning "the title ended".  Only trust the
+            # gap rule once at least two lines are in.
+            if len(parts) >= 2 or y - last_y > height * 0.22:
+                break
         parts.append(t)
         started = True
         last_y = y
@@ -1510,6 +1577,11 @@ def recover_numbered_sections(pages: List[Dict[str, Any]],
                 continue
             m = re.match(r"^(\d{1,2})(?:\.\d+)?\s+([A-Z][A-Za-z].*)$", text)
             if not m:
+                continue
+            # "1 State Key Laboratory of Organic-Inorganic Composites" is the
+            # first affiliation, numbered like a section.  It is a postal
+            # address, not a part of the paper's outline.
+            if _is_affiliation_line(m.group(2)):
                 continue
             # Running footer ("2 SYNTHETIC TEST DATA") is not a section and has
             # the same number as a real section; the rubric's section tree must
@@ -1542,6 +1614,8 @@ def recover_numbered_sections(pages: List[Dict[str, Any]],
         if text == text.upper() or (m and m.group(2) == m.group(2).upper()):
             continue
         base = re.sub(r"^\d+\s+", "", text).strip().lower()
+        if _is_affiliation_line(re.sub(r"^\d+\s+", "", text)):
+            continue
         if base in base_map and m:
             idx = base_map[base]
             old = re.match(r"^(\d+)", out[idx]["title"])
@@ -1594,6 +1668,20 @@ def extract_metadata(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]], 
         if line_title and len(line_title) > 6:
             meta["title"] = line_title
             meta["title_block"] = meta.get("title_block") or cand["id"]
+        # A two-line title is delivered as two heading blocks; the second line
+        # carries no punctuation and no affiliation, so joining it is safe.
+        if "title_block" in meta:
+            i = next((k for k, b in enumerate(first) if b["id"] == meta["title_block"]), None)
+            if i is not None and i + 1 < len(first):
+                nxt = first[i + 1]
+                t2 = nxt["text"].strip()
+                if (nxt.get("type") == "heading"
+                        and 8 < len(t2) < 180
+                        and not re.match(r"^\d", t2)
+                        and not re.search(r"\b(university|institute|department|laborator|correspondence)\b", t2, re.I)
+                        and not meta["title"].rstrip().endswith((".", ";", ":"))
+                        and len(meta["title"]) < 200):
+                    meta["title"] = (meta["title"].rstrip() + " " + t2).strip()
     # authors: everything between the title and the abstract is one author region
     if meta["title_block"]:
         idx = next(i for i, b in enumerate(first) if b["id"] == meta["title_block"])
@@ -1618,7 +1706,24 @@ def extract_metadata(pages: List[Dict[str, Any]], blocks: List[Dict[str, Any]], 
                             re.match(r"^[A-ZÀ-ÖØ-Þ][\w'’.-]*$|^[A-Z]\.$", t) for t in toks):
                         direct_names.append(part)
         if len(direct_names) >= 2:
+            # A wide author list wraps onto a second line ("Hao Wang2, Lina
+            # Zhao2, ..."), which is still authors, not an affiliation.
             meta["authors"] = direct_names[:24]
+            for nxt in first[start + 1: start + 4]:
+                t = nxt["text"].strip()
+                if (re.search(r"\b(department|university|institute|laborator|college|correspondence|"
+                              r"school of|abstract)\b", t, re.I)
+                        or len(t) > 160
+                        or not re.search(r",|\band\b", t)):
+                    break
+                more = names_from_author_line(t)
+                if len(more) < 2:
+                    break
+                for nm in more:
+                    if nm.lower() not in {x.lower() for x in meta["authors"]}:
+                        meta["authors"].append(nm)
+                if len(meta["authors"]) >= 24:
+                    break
             start = len(first)
         for b in first[start: start + 16]:
             t = b["text"].strip()

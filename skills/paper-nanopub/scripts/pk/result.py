@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Tuple
 
 from . import contract, report
@@ -452,14 +453,30 @@ def validate_result(result: Dict[str, Any] | str, doc: Dict[str, Any] | None = N
             # really in it.  Treating a path as a block id made every such item
             # read as "unknown block", which failed the whole run.
             if out_dir and not any(c in idx for c in evd.components(bid)):
-                path = os.path.join(out_dir, bid)
+                # "main.tex:33" is a file anchor plus a line number; the file is
+                # what has to exist, the line is provenance for the reader.
+                path_id = bid
+                m_line = re.match(r"^(.*\.[A-Za-z0-9]{1,6}):\d+$", bid)
+                if m_line:
+                    path_id = m_line.group(1)
+                path = os.path.join(out_dir, path_id)
+                if not os.path.exists(path):
+                    # LaTeX deliverables live under project/; the evidence
+                    # anchor is relative to the entry file, so look it up by
+                    # basename before declaring the block unknown.
+                    base = os.path.basename(path_id)
+                    for dirpath, _dirs, names in os.walk(out_dir):
+                        cand = os.path.join(dirpath, base)
+                        if base in names:
+                            path = cand
+                            break
                 if os.path.exists(path) and os.path.isfile(path):
                     try:
                         with open(path, "r", encoding="utf-8", errors="replace") as fh:
                             body = fh.read()
                     except OSError:
                         body = ""
-                    chk = evd.verify({"blocks": [{"id": bid, "text": body}]}, bid,
+                    chk = evd.verify({"blocks": [{"id": path_id, "text": body}]}, path_id,
                                      item.get("quote") or "")
                     # An empty quote only asserts the file exists; that is not
                     # evidence of anything, so require the anchor to be cited.

@@ -216,6 +216,130 @@ def _table_rows_mapped(page, t, engine_rows: List[List[str]]) -> List[List[str]]
     return rows
 
 
+def _word_grid_rows(page, t) -> List[List[str]]:
+    """Rebuild a table from word *start* positions inside the table box.
+
+    When a row label is wider than its column ("TpPa-SO3H-2" running into the
+    pore-size column) the engine merges the two columns: a six-column table
+    arrives as four, every cell holding two values, and no amount of cell-level
+    tidying can split them again.  Word starts still line up: each column has
+    its own left edge, so the anchors are recovered from the words themselves.
+    """
+    try:
+        raw = page.get_text("words")
+    except Exception:
+        return []
+    x0, y0, x1, y1 = (float(v) for v in t.bbox)
+    # The engine box starts at the *top* of the header text, so a baseline test
+    # would drop the very row that names the columns; half a line of slack
+    # keeps it while still excluding the caption above.
+    ws = [w for w in raw
+          if float(w[0]) >= x0 - 2.0 and float(w[2]) <= x1 + 3.0
+          and float(w[1]) >= y0 - 6.0 and float(w[3]) <= y1 + 6.0]
+    if len(ws) < 6:
+        return []
+    # 1) column anchors: clusters of word left edges
+    starts = sorted(float(w[0]) for w in ws)
+    clusters: List[List[float]] = []
+    for s in starts:
+        if clusters and s - clusters[-1][-1] <= 3.0:
+            clusters[-1].append(s)
+        else:
+            clusters.append([s])
+    if len(clusters) < 2:
+        return []
+    heavy = [(c[0], len(c)) for c in clusters if len(c) >= 2] or \
+            [(c[0], len(c)) for c in clusters]
+    # A unit fragment ("(Å)", "m-2") starts a little to the right of its own
+    # column and must not become a column of its own.
+    for left, n in [(c[0], len(c)) for c in clusters if len(c) < 2]:
+        if not heavy:
+            break
+        best = min(range(len(heavy)), key=lambda i: abs(heavy[i][0] - left))
+        prev_gap = left - heavy[best - 1][0] if best > 0 else 1e9
+        next_gap = heavy[best + 1][0] - left if best + 1 < len(heavy) else 1e9
+        if min(prev_gap, next_gap) < max(prev_gap, next_gap) * 2.5:
+            heavy[best] = (heavy[best][0], heavy[best][1] + n)
+    anchors = sorted({round(a, 1) for a, _ in heavy})
+    if len(anchors) < 2:
+        return []
+    mids = [(anchors[i] + anchors[i + 1]) / 2 for i in range(len(anchors) - 1)]
+    bounds = [x0] + mids + [x1 + 1.0]
+
+    def col_of(x: float) -> int:
+        for i in range(len(bounds) - 1):
+            if bounds[i] <= x < bounds[i + 1]:
+                return i
+        return len(anchors) - 1
+
+    # 2) rows: baselines, with superscripts folded into the line they mark
+    order = sorted(ws, key=lambda w: (float(w[1]), float(w[0])))
+    groups: List[List[Any]] = []
+    for w in order:
+        top, bot = float(w[1]), float(w[3])
+        if groups:
+            g = groups[-1]
+            gtop, gbot = min(float(x[1]) for x in g), max(float(x[3]) for x in g)
+            overlap = min(bot, gbot) - max(top, gtop)
+            near = abs(top - gtop) <= 2.0
+            if near or overlap > 0.4 * min(bot - top, gbot - gtop or 1.0):
+                g.append(w)
+                continue
+        groups.append([w])
+    if len(groups) < 2:
+        return []
+    rows: List[List[str]] = []
+    for g in groups:
+        cells: List[List[str]] = [[] for _ in anchors]
+        for w in sorted(g, key=lambda w: float(w[0])):
+            cells[col_of(float(w[0]))].append(str(w[4]))
+        rows.append([" ".join(c).strip() for c in cells])
+
+    # 3) a wrapped header spans several baselines; join it into one row
+    head_n = 0
+    for r in rows:
+        vals = [c for c in r if c]
+        if len(vals) < 2 or any(_cell_is_data(c) for c in vals):
+            break
+        head_n += 1
+    if 1 < head_n < len(rows):
+        head = [""] * len(anchors)
+        for r in rows[:head_n]:
+            for j, c in enumerate(r):
+                if c:
+                    head[j] = (head[j] + " " + c).strip()
+        rows = [head] + rows[head_n:]
+    # 4) header cells glued by the column grid ("MembranePore size (Å)")
+    head = rows[0]
+    for j in range(len(head) - 1):
+        parts = _split_glued(head[j])
+        if parts:
+            head[j], head[j + 1] = parts[0], (parts[1] + " " + head[j + 1]).strip()
+    return [r for r in rows if any(c for c in r)]
+
+
+_GLUED = re.compile(r"^(.*?[a-z\)\]\.])([A-Z][a-z]{2,}.*)$")
+
+
+def _split_glued(cell: str) -> List[str] | None:
+    """Split "MembranePore" / "S(Li/Mg)Area" into their two header labels."""
+    c = (cell or "").strip()
+    m = _GLUED.match(c)
+    if not m:
+        return None
+    left, right = m.group(1).strip(), m.group(2).strip()
+    if len(left) < 3 or len(right) < 3:
+        return None
+    if len(left.split()) > 3 or re.search(r"\d$", right):
+        return None
+    return [left, right]
+
+
+def _cell_is_data(cell: str) -> bool:
+    c = (cell or "").strip()
+    return bool(re.match(r"^[+\-−]?[\d.]+(?:\s|$)", c)) or bool(re.match(r"^\d", c))
+
+
 def _table_rows(page, t) -> List[List[str]]:
     """Rebuild a table's rows from text baselines and column spans."""
     box = tuple(t.bbox)
@@ -377,6 +501,13 @@ def _fitz_tables(path: str, pages: List[int] | None = None) -> List[Dict[str, An
                 rows = [r for r in rows if any(c for c in r)]
                 if len(rows) < 2:
                     continue
+                # A fourth reading starts from word positions instead of cells.
+                # It only wins when the engine merged columns, which shows up as
+                # a wider grid with fewer lost spaces.
+                grid = _word_grid_rows(page, t)
+                if grid and len(grid[0]) > max((len(r) for r in rows), default=0) \
+                        and _rows_quality(grid) <= _rows_quality(rows) + 1:
+                    rows = grid
                 out.append({"page": pno + 1, "bbox": _bbox(t.bbox), "rows": rows})
     finally:
         doc.close()

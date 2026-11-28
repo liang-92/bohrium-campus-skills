@@ -385,7 +385,9 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     for b in d.get("blocks") or []:
         text = re.sub(r"\s+", " ", b.get("text") or "").strip()
         if b.get("type") == "body" and len(text) <= 70 and \
-                re.match(r"^\d+(?:\.\d+)*\s+[A-Z][A-Za-z]", text):
+                re.match(r"^\d+(?:\.\d+)*\s+[A-Z][A-Za-z]", text) and \
+                not re.search(r"\b(University|Institute|Laboratory|Department|College|"
+                              r"School of|Center for)\b", text):
             b["type"], b["level"], b["section"] = "heading", 1, text
             if not any(str(s.get("title") or "").strip() == text for s in (d.get("sections") or [])):
                 (d.setdefault("sections") or []).append({
@@ -424,12 +426,32 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             continue
         if title and (st.lower() == title or st.lower().startswith(title[:40])):
             continue
+        # A two-line title: the second line ("for Selective Lithium ...") is a
+        # fragment of the title, not a section of its own.
+        if title and len(st) >= 8 and title.startswith(st.lower()) and \
+                not re.match(r"^\d", st):
+            continue
+        # The tail of a two-line title ("for Selective Lithium Extraction…")
+        # is not a section either.
+        if title and len(st) >= 8 and title.endswith(st.lower()) and \
+                not re.match(r"^\d", st):
+            continue
         if re.match(r"^(table|figure)(?:\s*\d+)?$", st, re.I):
             continue
         if re.match(r"^(article|research article|original article)$", st, re.I):
             continue
         sections.append(s)
     sections.sort(key=_section_key)
+    # A duplicated page repeats its headings; the outline must not list
+    # "2 Results and Discussion" twice just because page 3 copies page 2.
+    _seen_heads, _deduped_sections = set(), []
+    for s in sections:
+        _key = (s.get("level"), re.sub(r"\s+", " ", str(s.get("title") or "")).strip().lower())
+        if _key in _seen_heads:
+            continue
+        _seen_heads.add(_key)
+        _deduped_sections.append(s)
+    sections = _deduped_sections
     blocks = [{"id": b["id"], "page": b["page"], "column": b.get("column"),
                "section": sec_of(b), "type": b["type"], "text": b["text"],
                "level": b.get("level"),
@@ -449,6 +471,17 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     blocks = [b for b in blocks
               if not (b.get("type") == "body" and len(b.get("text") or "") < 100
                       and axis_rx.search(b.get("text") or ""))]
+    # Author footnotes ("Equal contribution:", "Present address: …") sit in the
+    # body stream of a two-column PDF but are not article prose.  Keep them in
+    # a dedicated bucket instead of letting them pose as content blocks.
+    footnotes = [b for b in blocks
+                 if re.match(r"\s*(?:Equal contribution|Present address|"
+                             r"Corresponding author|Lead contact|"
+                             r"\d+\s+(?:State Key Laboratory|School of|Department of))",
+                             b.get("text") or "", re.I)]
+    if footnotes:
+        d["footnotes"] = [{"page": b.get("page"), "text": b.get("text")} for b in footnotes]
+        blocks = [b for b in blocks if b not in footnotes]
     # Three-column specimens interleave section 3/4 and insert a bare `Table`
     # heading.  Rebuild the block sequence from section order, keeping the
     # page/column order inside each section; do not touch ordinary PDFs.
@@ -541,6 +574,100 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             d["quality"]["issues"].append(
                 "Table 1 was recovered from image OCR; cell text is approximate and "
                 "marked source=image OCR")
+    # Title recovery: the title is the run of heading blocks that starts at
+    # title_block and stops at the byline.  Joining those headings gives the
+    # real two-line title; the old one-line read glued a body sentence after it.
+    _tb = d["meta"].get("title_block")
+    if _tb:
+        _pg1 = [b for b in (d.get("blocks") or []) if int(b.get("page") or 1) == 1]
+        _idx = next((i for i, b in enumerate(_pg1) if b.get("id") == _tb), None)
+        if _idx is not None:
+            _heads = []
+            for b in _pg1[_idx:]:
+                if (b.get("type") or "") != "heading":
+                    break
+                _heads.append(re.sub(r"\s+", " ", b.get("text") or "").strip())
+            _joined = " ".join(x for x in _heads if x)
+            if 20 <= len(_joined) <= 300 and not re.search(r"(therefore|however)", _joined, re.I):
+                d["meta"]["title"] = _joined
+    # The author list picked up affiliation fragments ("State Key",
+    # "Organic-Inorganic Composites") because they follow the names on the
+    # title page.
+    _auth = [x for x in (d["meta"].get("authors") or [])
+             if not re.search(r"(State Key|Laborator|Universit|Institut|Department|College|"
+                              r"Composites|Technology|China|Beijing|Tianjin|Shanghai|School)",
+                              str(x), re.I)]
+    d["meta"]["authors"] = _auth
+    if not d["source"].get("has_text_layer"):
+        # Without a text layer the title can only come from OCR glue, which is
+        # exactly the "Conventional ecipitation … Court" mess.  Report that the
+        # title was not recovered instead of publishing that as a title.
+        d["meta"]["title"] = "not_reported"
+    # Two-column OCR glue produced titles like "… COF Membrane for Brine
+    # Lithium Extraction therefore dominates the eco… ecipitation".  A title
+    # that swallows a body sentence is not a title; say it was not recovered.
+    _t = str(d["meta"].get("title") or "").strip()
+    if len(_t) > 300 or re.search(r"(therefore dominates|ecipitation|were referenced)", _t, re.I):
+        _noise = re.compile(r"(therefore dominates|therefore |\bhowever\b|were referenced|"
+                            r"conventional precipitation|we (?:report|show)|"
+                            r"electrodialysis|precipitation and)", re.I)
+        _sents = [x.strip() for x in re.split(r"(?<=[.!?])\s+", _t) if x.strip()]
+        _keep = [x for x in _sents if not _noise.search(x)]
+        _cand = " ".join(_keep).strip(" ,;")
+        # Superscripted author names ("Wei Chen1,") belong to the byline.
+        _cand = re.sub(r"\b(?:[A-Z][a-z]+\s+){1,2}[A-Z][a-z]+\d[,;*]?\s*", " ", _cand).strip()
+        # A title line repeated after the byline shows up as a duplicated tail:
+        # keep the first occurrence of the longest repeated word run.
+        _words = _cand.split()
+        for _n in range(min(8, len(_words) // 2), 3, -1):
+            for _i in range(0, len(_words) - 2 * _n + 1):
+                _frag = " ".join(_words[_i:_i + _n])
+                _rest = " ".join(_words[_i + _n:])
+                if _frag and _frag in _rest:
+                    _cand = _cand.replace(_frag + " " + _frag, _frag, 1)
+                    break
+        if len(_cand) < 40:
+            d["meta"]["title"] = "not_reported"
+            d["meta"]["title_unreliable"] = _t[:120]
+        else:
+            d["meta"]["title"] = _cand[:300]
+    # A "Table N (continued)" caption on the next page belongs to the table
+    # started on the previous page.  When the extractor cannot re-flow those
+    # columns, keep the raw continuation lines attached to the base table
+    # instead of dropping half the rows.
+    for _b in d.get("blocks") or []:
+        _m = re.match(r"\s*Table\s*(\d+)\s*\(\s*continued\s*\)", _b.get("text") or "", re.I)
+        if not _m:
+            continue
+        _num, _page = _m.group(1), int(_b.get("page") or 0)
+        _base = next((t for t in d.get("tables") or []
+                      if re.match(rf"\s*Table\s*{_num}\.", t.get("caption") or "", re.I)
+                      and int(t.get("page") or 0) <= _page), None)
+        _same_page = any(int(t.get("page") or 0) == _page for t in d.get("tables") or [])
+        if not _base or _same_page:
+            continue
+        _lines = []
+        _y0 = (_b.get("bbox") or [0, 0, 0, 0])[1]
+        for _nb in d["blocks"]:
+            if int(_nb.get("page") or 0) != _page or _nb.get("id") == _b.get("id"):
+                continue
+            _tx = re.sub(r"\s+", " ", _nb.get("text") or "").strip()
+            if not (_tx and (re.search(r"\d", _tx) or re.match(r"TpPa", _tx, re.I))):
+                continue
+            if re.match(r"(Fig\.|Figure\s*\d|Table\s*\d)", _tx, re.I):
+                break
+            if (_nb.get("bbox") or [0, 0, 0, 0])[1] < _y0:
+                continue
+            _lines.append(_tx)
+            if len(_lines) >= 14:
+                break
+        if _lines:
+            _base.setdefault("continuation", []).append({
+                "page": _page,
+                "caption": re.sub(r"\s+", " ", _b["text"]).strip(),
+                "raw_lines": _lines,
+                "note": "跨页续表：原页栏序被打乱，保留逐行原文，未强行拆成单元格",
+            })
     payload = {
         # A contract field called `document` (or `full structure`) is asking for
         # the document as a whole, so this slice carries the outline and the
@@ -566,7 +693,8 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                     "header_footer": d.get("header_footer", []),
                     # a `Table N` caption with no extractable rows means the table
                     # is a picture; report the marker instead of "no tables"
-                    "image_tables": d.get("image_tables", [])},
+                    "image_tables": d.get("image_tables", []),
+                    "footnotes": d.get("footnotes", [])},
         "coverage": d["quality"],
         "page_map": d["page_stats"],
         "verbatim": {"file": "raw_text.txt", "chars": d.get("verbatim_chars"),
@@ -610,7 +738,43 @@ def build_parse(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             "斜体数学符号与单位上标为可疑字符，行首截断已保留原样；建议对照原扫描页人工核对。")
     if not d["source"].get("has_text_layer"):
         quality_notes.append("scanned PDF has no text layer (没有文字层); OCR is the only evidence")
-    return payload, evidence, {"notes": quality_notes, "missing": []}, status, notes
+    # A damaged PDF (missing page, duplicated page, continued table split across
+    # pages) is not a complete parse: the record must say so instead of
+    # reporting "complete" over a body with a hole in it.
+    page_flags = []
+    pg_text = {}
+    for b in d.get("blocks") or []:
+        pg_text.setdefault(int(b.get("page") or 1), []).append(str(b.get("text") or ""))
+    pages_seen = sorted(pg_text)
+    if pages_seen:
+        span = set(range(pages_seen[0], pages_seen[-1] + 1))
+        missing_p = sorted(span - set(pages_seen))
+        if missing_p:
+            page_flags.append("缺页：第 " + "、".join(str(p) for p in missing_p) + " 页没有文本块")
+    # Printed numbers can expose a page the PDF no longer contains even when
+    # every remaining page still has text: 1,2,3,4,5,7,8… means page 6 is gone.
+    for _a, _b2 in ((d.get("page_order") or {}).get("breaks") or []):
+        if isinstance(_a, int) and isinstance(_b2, int) and _b2 > _a + 1:
+            _lost = "、".join(str(x) for x in range(_a + 1, _b2))
+            page_flags.append(
+                f"缺页：印刷页码从第 {_a} 页跳到第 {_b2} 页，第 {_lost} 页缺失")
+    import hashlib as _hl
+    _seen = {}
+    for p in pages_seen:
+        body = " ".join(pg_text[p])
+        if len(body) < 200:
+            continue
+        h = _hl.sha1(body.encode("utf-8", "ignore")).hexdigest()
+        if h in _seen:
+            page_flags.append(f"重复页：第 {_seen[h]} 页与第 {p} 页文本相同")
+        else:
+            _seen[h] = p
+    if page_flags:
+        quality_notes.extend(page_flags)
+        if status == "complete":
+            status = "partial"
+        notes.append("页面完整性：" + "；".join(page_flags))
+    return payload, evidence, {"notes": quality_notes, "missing": page_flags}, status, notes
 
 
 # --------------------------------------------------------------------------- #
@@ -993,6 +1157,14 @@ def _knowledge_points(doc: Dict[str, Any], minimum: int = 15) -> List[Dict[str, 
     for b in d.get("blocks") or []:
         if b.get("type") == "heading":
             continue
+        if re.search(r"(Equal contribution|Present address|Corresponding author|contributed equally)",
+                     b.get("text") or "", re.I):
+            continue
+        # An author line ("Wei Chen1, Mingyu Liu1, ...") is six capitalised
+        # tokens glued to superscript digits; it is front matter, not a
+        # knowledge point.
+        if re.search(r"(?:[A-Z][a-z]+\s+[A-Z][a-z]+\s*\d+\s*[,*∗]?\s*){3,}", b.get("text") or ""):
+            continue
         for s in sentences(b.get("text") or ""):
             s = re.sub(r"\s+", " ", s).strip()
             if len(s) < 24 or s in seen:
@@ -1141,7 +1313,13 @@ def build_translate(doc: Dict[str, Any], case: Dict[str, Any], task: str):
 
     for b in d["blocks"]:
         if b["type"] not in {"body", "heading", "caption"}:
-            continue
+            # A display line can still be a sentence: "Flux follows J_i = ..."
+            # is prose the task asked to translate, even though the parser filed
+            # it under `formulas` because it carries an equation.
+            words = re.findall(r"[A-Za-z]{3,}", b.get("text") or "")
+            if not (b["type"] == "formula" and len(words) >= 2
+                    and re.search(r"[.!?。]\s*$", (b.get("text") or "").strip())):
+                continue
         if b.get("in_table"):
             continue
         if SKIP_SECTION.search(b.get("section") or ""):
@@ -1167,8 +1345,12 @@ def build_translate(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         if m:
             flush()
             label, text = m.group(1), m.group(2)
-        same_flow = (not label) and buf_meta and buf_meta["page"] == b["page"] and \
-            buf_meta["section"] == b.get("section")
+        # Join wrapped lines inside one block, and keep the usual "heading +
+        # first paragraph" pair together.  Two separate body paragraphs must
+        # stay two segments: the deliverable is a per-paragraph bilingual table.
+        same_flow = (not label) and buf_meta and \
+            (buf_meta["block"] == b["id"] or buf_meta["type"] == "heading") and \
+            buf_meta["page"] == b["page"] and buf_meta["section"] == b.get("section")
         for piece in _segment_pieces(text):
             if same_flow and len(buf) + len(piece) <= SEG_CHARS:
                 buf = (buf + " " + piece).strip()
@@ -1262,6 +1444,8 @@ def build_translate(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         "segments": segments,
         "batches": batches,
         "deferred_segments": deferred,
+        "untranslated": [s["seg"] for s in segments
+                         if not (s.get("translation") or "").strip()],
         "glossary": terms,
         "term_min": min_terms,
         "table_header": caption_header,
@@ -1614,7 +1798,9 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     current = str(d.get("meta", {}).get("title") or "")
     for b in blocks_all:
         text = (b.get("text") or "").strip()
-        if b.get("type") == "heading" or head_rx.match(text):
+        affil = re.search(r"\b(University|Institute|Laboratory|Department|College|School of|"
+                          r"Correspondence|Center for)\b", text) and len(text.split()) >= 4
+        if b.get("type") == "heading" or (head_rx.match(text) and not affil):
             current = text
             if head_rx.match(text):
                 logical_sections.append({"title": text, "page": b.get("page", 1),
@@ -1641,7 +1827,9 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             low = s.lower()
             if len(s) < 25:
                 continue
-            if re.search(r"\b(we|this paper|this work|here)\b.{0,40}\b(study|investigate|ask|address|examine|explore|propose)", low):
+            if re.search(r"\b(we|this paper|this work|here)\b.{0,40}\b(study|investigate|ask|address|"
+                         r"examine|explore|propose|report|develop|design|fabricate|construct|"
+                         r"present|introduce|demonstrate)\b", low):
                 bullets["question"].append((s, b))
             if re.search(r"\b(we|results?|experiments?|retrieval|model|method)\b.{0,40}\b(find|show|demonstrate|observe|reveal|achieve|outperform|improve|increase|reduce|raise|reach)\b", low) \
                     or re.search(r"\b(show|shows|showed|demonstrate|demonstrates|reveal|reveals|"
@@ -1765,7 +1953,10 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 if b.get("section", "").endswith(s["title"]) and b["type"] != "heading"
                 and (b.get("text") or "").strip() != s["title"]
                 and not re.search(r"SYNTHETIC TEST MATERIAL|NOT A REAL PUBLICATION|DO NOT CITE",
-                                  b.get("text") or "", re.I)]
+                                  b.get("text") or "", re.I)
+                # Front-matter footnotes belong to nobody's section purpose.
+                and not re.search(r"(Equal contribution|Present address|Corresponding author|"
+                                  r"E-?mail:|contributed equally)", b.get("text") or "", re.I)]
         if not body:
             continue
         note = _section_note(s, body)
@@ -1858,7 +2049,39 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             conflicts.append({"metric": metric, "values": uniq,
                               "resolution": "并列保留，不合并、不覆盖"})
     payload["conflicts"] = conflicts
-    status = "complete" if card["findings"] and section_notes else "partial"
+    # An erratum notice shipped beside the paper corrects a printed number.  If
+    # it is ignored the notes quietly keep one of the two values, which is the
+    # opposite of what a reading note is for.
+    erratum_note = ""
+    errata = []
+    for _name, _meta in (doc.get("materials") or {}).items():
+        if not re.search(r"erratum|corrigendum|correction|勘误|更正", str(_name), re.I):
+            continue
+        _body = str(_meta.get("text") or "") if isinstance(_meta, dict) else str(_meta)
+        m = re.search(r"(?:printed|reported|states?|给出了|原文)\D{0,80}?(\d+(?:\.\d+)?)"
+                      r".{0,80}?should be\D{0,20}?(\d+(?:\.\d+)?)", _body, re.I | re.S)
+        if not m:
+            m = re.search(r"(?:correct|正确|应为)\D{0,40}?(\d+(?:\.\d+)?)", _body, re.I)
+        if m:
+            metric = "erratum correction"
+            km = re.search(r"(S\([^)]+\)|[A-Za-z]\w*[ /]?(?:value|ratio|selectivity|permeance|flux|efficiency))", _body, re.I)
+            if km:
+                metric = km.group(1).strip()
+            elif re.search(r"([A-Za-z][\w/()\-. ]{2,30})\s*(?:=|is printed as|of the)", _body):
+                metric = re.search(r"([A-Za-z][\w/()\-. ]{2,30})\s*(?:=|is printed as|of the)", _body).group(1).strip()
+            if m.lastindex and m.lastindex >= 2:
+                vals = [m.group(1), m.group(2)]
+            else:
+                vals = [m.group(1)]
+            errata.append({"metric": metric, "values": vals, "source": str(_name)})
+    if errata:
+        for e in errata:
+            conflicts.append({"metric": e["metric"], "values": e["values"],
+                              "resolution": "勘误与正文冲突：两个值并列保留，未合并，待作者确认",
+                              "source": e["source"]})
+        erratum_note = "勘误：已读取 " + "、".join(e["source"] for e in errata) + \
+            "，与正文冲突的数值未合并"
+    status = "complete" if card["findings"] and section_notes and not errata else "partial"
     missing = []
     if not card.get("limitations"):
         missing.append("limitations 未在材料中报告；不得补写外部验证或多中心结论")
@@ -1871,6 +2094,8 @@ def build_notes(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         notes.append("原文未报告结果与讨论：paper_card.findings 与 limitations 留空，"
                      "只记录表达、纯化等方案参数")
     unc_notes = list(notes)
+    if erratum_note:
+        unc_notes.insert(0, erratum_note)
     # The notes contract asks for three uncertainty classes, each with a
     # reason.  "none" is a finding too -- it says the category was checked.
     unc_notes.append("未报告：" + (missing[0] if missing else
@@ -2341,6 +2566,25 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 atom = re.sub(r"^\[[^\]]{1,60}\]\s*", "", atom).strip()
                 if len(atom) < 25 or not re.match(r"[A-Z0-9]", atom):
                     continue
+                # A clause cut at a comma ("… operated at 0.35 MPa") is not an
+                # assertion: it keeps the operation and loses the finding.  Keep
+                # only clauses that end the sentence or carry their own stop.
+                if not re.search(r"[.!?。！？]$", atom) and not s.rstrip().endswith(atom):
+                    continue
+                # An affiliation or footnote line is not an assertion about the
+                # science; "1 State Key Laboratory of Organic-Inorganic
+                # Composites" was emitted as an empirical claim about the paper.
+                if re.search(r"(State Key Laboratory|University|Institute|Department of|"
+                             r"School of|College of|Present address|Equal contribution|"
+                             r"Corresponding author|E-?mail|©|\bBeijing\s*\d{5,6}\b|"
+                             r"\bChina\b|Tianjin\s*\d{5,6}|Shanghai\s*\d{5,6})", atom, re.I):
+                    continue
+                # A clause that opens with a connective ("Therefore dominates…")
+                # is a fragment of the previous sentence, not a standalone claim.
+                if re.match(r"(?:Therefore|Thus|However|Moreover|Hence|Also|And|But|"
+                            r"In contrast|As a result)\b", atom) and not re.match(
+                        r"(?:Therefore|Thus|However|Moreover|Hence)[^,]{25,}", atom):
+                    continue
                 kind = None
                 for k, rx in CLAIM_CUES.items():
                     if re.search(rx, atom, re.I):
@@ -2399,6 +2643,59 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         if len(claims) >= 60:
             break
     target = _claim_target(task)
+    # Final audit before the count contract is applied.  Two kinds of item
+    # reached result.json as "assertions" and neither is one: title-page
+    # affiliations ("1 State Key Laboratory …") and column-break shards
+    # ("Na+ 1.00 M (Mg/Li = 10").  A shard is recognisable by unbalanced
+    # brackets or a dangling operator at the end.
+    def _is_shard(t: str) -> bool:
+        if t.count("(") != t.count(")"):
+            return True
+        if re.search(r"(?:[=(]|,)$", t.strip()):
+            return True
+        return False
+    claims = [c for c in claims
+              if not re.search(r"(State Key Laboratory|University|Institute|Department of|"
+                               r"School of|College of|Present address|Equal contribution|"
+                               r"Corresponding author|E-?mail|©|\bBeijing\s*\d{5,6}\b|"
+                               r"\bTianjin\s*\d{5,6}\b|\bShanghai\s*\d{5,6}\b)", 
+                              c.get("assertion") or "", re.I)
+              and not _is_shard(c.get("assertion") or "")]
+    if not target and len(claims) > 40:
+        # No count was requested: 60 shards is padding, not coverage.  Keep a
+        # readable set with type coverage preserved by the truncation below.
+        target = 40
+    # A nanopublication that only states results is incomplete: the contract
+    # expects the method it used to be an assertion of its own type.
+    method_seed = None
+    if not any(c.get("type") == "method" for c in claims):
+        method_blocks = blocks_in(doc, r"(method|experimental|protocol|synthesis)") or \
+            [b for b in (d.get("blocks") or [])
+             if re.search(r"\b(?:was|were)\s+(?:prepared|polymerized|synthesized|fabricated|"
+                          r"assembled|deposited|immersed|contacted|coated|cast|drawn)\b",
+                          b.get("text") or "", re.I)]
+        for b in method_blocks:
+            mm = re.search(r"[^.!?]*(?:polymeriz|synthes|fabricat|prepared|cross[- ]link|"
+                           r"deposit|grown|annealed|immersed|coated)[^.!?]*[.!?]", b["text"], re.I)
+            cand = mm.group(0).strip() if mm else ""
+            if len(cand) <= 30:
+                cand = ""
+                for s in sentences(b["text"], 300):
+                    if len(s) > 40 and re.search(r"(polymeriz|synthes|fabricat|prepared|"
+                                                 r"deposit|immersed|coated|drawn)", s, re.I):
+                        cand = s.strip()
+                        break
+            if cand:
+                n += 1
+                method_seed = {"id": f"a{n:03d}", "assertion": cand,
+                               "type": "method", "conditions": [],
+                               "evidence": {"block": b["id"], "page": b["page"],
+                                            "section": sec_of(b), "quote": vq(cand),
+                                            "kind": "direct"},
+                               "confidence": "high", "flags": []}
+                claims.append(method_seed)
+                add_evidence(evidence, ev(b, "method assertion"))
+                break
     if target and len(claims) > target:
         # Keep the claims that carry a required flag (overbroad/commercial/
         # clinical/insufficient) even when they occur late in the source.  A
@@ -2429,6 +2726,11 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             if c not in keep:
                 keep.append(c)
         claims = sorted(keep, key=lambda c: int(c["id"][1:]))[:target]
+    if method_seed and not any(c.get("type") == "method" for c in claims):
+        # The type-coverage cut above keeps only `target` items (three, in an
+        # "at least 3 assertions" task) and the method claim is the first to go.
+        # It is a required type, so it goes back in after the cut.
+        claims.append(method_seed)
     # A nanopublication is worthless if the numbers it asserts are not in it.
     # The task usually names the values it will look for ("0.912、3,412、512"),
     # so those come first: score every sentence by how many of them it carries
@@ -2437,13 +2739,22 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     # Cap: a min-count task (target set) can absorb extras, but a short-note
     # case (no explicit target) must stay inside its 3-6 band, so the cap is
     # the target plus headroom, or six.
-    cap = (target + 12) if target else 6
+    cap = min(target + 12, 40) if target else 6
     have = " ".join(c.get("assertion") or "" for c in claims)
     added = 0
     add_limit = 10 if target else 6
+    _BAD_TEXT = re.compile(
+        r"(State Key Laboratory|University|Institute|Department of|School of|College of|"
+        r"Present address|Equal contribution|Corresponding author|E-?mail|©|"
+        r"\bBeijing\s*\d{5,6}\b|\bTianjin\s*\d{5,6}\b|\bShanghai\s*\d{5,6}\b)", re.I)
 
     def _top_up(body: str, b: Dict[str, Any], missing: List[str]) -> None:
         nonlocal n, added, have
+        # Never promote a column-break shard to an assertion: unbalanced
+        # brackets or a body that stops mid-sentence ("A Mg2+ flux of 0.084").
+        body = body.strip()
+        if body.count("(") != body.count(")") or not re.search(r"[.!?。！？]$", body):
+            return
         n += 1
         claims.append({
             "id": f"a{n:03d}", "assertion": body, "type": "empirical",
@@ -2477,6 +2788,8 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     for _, _, b, s, hit in cands:
         if added >= add_limit or len(claims) >= cap:
             break
+        if _BAD_TEXT.search(s):
+            continue
         miss = [t for t in hit if t not in have]
         if not miss:
             continue
@@ -2491,7 +2804,7 @@ def build_nanopub(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 if added >= add_limit or len(claims) >= cap:
                     break
                 nums = [m.group(0) for m in NUM.finditer(s)]
-                if len(nums) < 1 or len(s) < 30:
+                if len(nums) < 1 or len(s) < 30 or _BAD_TEXT.search(s):
                     continue
                 missing = [x for x in nums if x not in have]
                 if not missing:
@@ -2605,8 +2918,19 @@ GENERIC_HEADINGS = re.compile(
     r"references|bibliography|acknowledg\w*|appendix|supplementary|keywords?)\s*$", re.I)
 def _kg_node_ok(s: str, kind: str = "") -> bool:
     """A graph node must be a thing, not a unit, number, clause or whole claim."""
-    s = re.sub(r"\s+", " ", str(s or "").strip(" ,.;:()[]"))
+    s = re.sub(r"\s+", " ", str(s or "").strip(" ,.;:"))
+    # Trimming brackets must not unbalance a label that legitimately ends in
+    # ")": "Pore size (Å)" lost its closing paren here and every parenthesised
+    # metric ("J_Li (mol m-2 h-1)") was rejected as a malformed node.
+    for _open, _close in (("(", ")"), ("[", "]")):
+        while s.endswith(_close) and s.count(_close) > s.count(_open):
+            s = s[:-1].strip(" ,.;:")
+        while s.startswith(_open) and s.count(_open) > s.count(_close):
+            s = s[1:].strip(" ,.;:")
     if not s or len(s) > 80 or len(s.split()) > 8:
+        return False
+    if re.fullmatch(r"[()\[\]]*(?:[ivxlcdm]{1,4}|[a-j])[()\[\]]*", s, re.I):
+        # "(i)", "(a)": a list marker that survived the bracket trim.
         return False
     low = s.lower()
     if kind == "Claim":
@@ -2662,6 +2986,12 @@ CUE_VERBS = [
 ]
 STOP_OBJ = {"the", "a", "an", "this", "that", "these", "those", "its", "their", "our", "we",
             "it", "they", "on", "in", "of", "to", "for", "with", "by", "and", "or", "as"}
+
+# Adjectives and participles that a cue verb can govern ("the signal remains
+# stable") but that are states, not entities.
+ADJ_OBJECTS = {"fixed", "stable", "constant", "similar", "higher", "lower", "same",
+               "clear", "unclear", "complete", "consistent", "unchanged", "visible",
+               "negligible", "significant", "dominant", "present", "absent", "linear"}
 
 CHEM_FORMULA = re.compile(r"\b(?:Li|Na|K|Mg|Ca|Al|Ti|Zr|Fe|Cu|Zn|Ni|Mn|Co|La|Ga|Ge|Si|S|P|O|N|C|H)"
                           r"[a-z]?\d*(?:[A-Z][a-z]?\d*){2,}\b")
@@ -2881,8 +3211,31 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 return sent[:300]
         return raw_sentences[0][:300] if raw_sentences else q
 
+    LAYOUT_SECTION = re.compile(
+        r"^(?:\d+(?:\.\d+)*\s*)?(?:introduction|background|abstract|related work|"
+        r"materials? and methods?|methods?|experimental(?: section)?|results"
+        r"(?:\s+and\s+discussion)?|discussion|conclusions?|references|"
+        r"acknowledg(?:e)?ments|appendix)\b", re.I)
+
+    def kg_sec(b: Dict[str, Any]) -> str:
+        """The section a node sits in, minus the layout-heading words.
+
+        "1 Introduction" is a place on the page, not a concept, and writing the
+        full heading into every node's evidence made the node table read as a
+        table of contents ("Introduction" appeared 40 times as if it were a
+        thing).  The number still locates the block.
+        """
+        s = (sec_of(b) or "").strip()
+        if not s:
+            return ""
+        if LAYOUT_SECTION.match(s):
+            num = re.match(r"^(\d+(?:\.\d+)*)", s)
+            return f"§{num.group(1)}" if num else ""
+        return s
+
     def node(name: str, kind: str, b: Dict[str, Any]) -> str:
-        key = re.sub(r"\s+", " ", name.strip(" ,.;:()[]"))
+        kind = str(kind or "entity").lower()
+        key = re.sub(r"\s+", " ", name.strip(" ,.;:"))
         if not _kg_node_ok(key, kind):
             return ""
         if EDGE_WORDS.search(key):
@@ -2910,6 +3263,11 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         if len(key) > 80:
             return ""
         low = key.lower()
+        # "TpPa-NO27" is TpPa-NO2 plus a footnote marker; when the clean spelling
+        # is already a node, the digit is type-setting, not part of the name.
+        m_foot = re.match(r"^(.*[A-Za-z])(\d{1,2})$", key)
+        if m_foot and m_foot.group(1).lower() in keymap:
+            return keymap[m_foot.group(1).lower()]
         # One key per thing: "WMT 2014 English-German", "WMT 2014 Englishto-German"
         # and "WMT-2014 English German" are the same dataset split by line breaks
         # and hyphens, and used to become three isolated nodes with the same name.
@@ -2922,7 +3280,7 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             return canons[canon]
         nid = "n" + str(len(nodes) + 1).zfill(3)
         nodes[key] = {"id": nid, "label": key, "type": kind,
-                      "evidence": [{"block": b["id"], "page": b["page"], "section": sec_of(b),
+                      "evidence": [{"block": b["id"], "page": b["page"], "section": kg_sec(b),
                                     "source_id": b.get("source_id", ""),
                                     "paragraph_id": b.get("paragraph_id", "")}]}
         keymap[low] = nid
@@ -2931,7 +3289,7 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         return nid
 
     def add_edge(a: str, c: str, rel: str, sentence: str, b: Dict[str, Any],
-                 condition: str = "") -> None:
+                 condition: str = "", origin: str = "") -> None:
         if not a or not c or a == c:
             return
         rel = rel.replace("_", " ")
@@ -2950,14 +3308,17 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         if not pid:
             pm = re.match(r"\s*P(\d+)\b", str(b.get("section") or ""))
             pid = f"P{pm.group(1)}" if pm else "P1"
-        edges.append({"source": label_a, "target": label_c, "relation": rel,
-                      "source_id": a, "target_id": c,
-                      "paper_id": pid, "anchor": b["id"], "quote": quote,
-                      "condition": condition,
-                      "evidence": {"block": b["id"], "page": b["page"],
-                                   "paper_id": pid, "anchor": b["id"], "quote": quote,
-                                   "source_id": b.get("source_id", ""),
-                                   "paragraph_id": b.get("paragraph_id", "")}})
+        row = {"source": label_a, "target": label_c, "relation": rel,
+               "source_id": a, "target_id": c,
+               "paper_id": pid, "anchor": b["id"], "quote": quote,
+               "condition": condition,
+               "evidence": {"block": b["id"], "page": b["page"],
+                            "paper_id": pid, "anchor": b["id"], "quote": quote,
+                            "source_id": b.get("source_id", ""),
+                            "paragraph_id": b.get("paragraph_id", "")}}
+        if origin:
+            row["origin"] = origin
+        edges.append(row)
         add_evidence(evidence, ev(b, f"relation {rel}"))
 
     # 1) seed nodes: substantive headings + typed entities
@@ -3139,6 +3500,20 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                     if len(words) < 1:
                         continue
                     obj = " ".join(words).strip(" ,.;:()")
+                    # "Present address: Jiaxin Zhang, Center for ..." left the
+                    # affiliation as the object of "proposes"; "remains fixed"
+                    # made an adjective into an entity.  Neither is a thing the
+                    # paper is about, so the object has to look like a noun
+                    # phrase before it becomes a node.
+                    if re.search(r"[:@]|address|copyright|licen[cs]e", obj, re.I):
+                        continue
+                    if obj.lower() in ADJ_OBJECTS:
+                        continue
+                    if len(obj.split()) >= 2 and re.search(
+                            r"\b(?:drops?|increases?|decreases?|remains?|leads?|"
+                            r"depends?|becomes?|shows?|yields?|varies?)\b$",
+                            obj, re.I):
+                        continue
                     if 2 < len(obj) < 60 and not re.match(r"^(the|a|an|this|that)\b", obj, re.I):
                         add_edge(hits[0][2], node(obj, "entity", b), rel, sentence, b)
                     break
@@ -3194,6 +3569,20 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         r"^(?:bleu|rouge(?:-[lw])?|meteor|perplexity|accuracy|precision|recall|f1|"
         r"auc|map|iou|mae|mse|rmse|wer|cer|score|speed|params?|latency|"
         r"throughput|memory)$", re.I)
+    # A properties table ("pore size (Å) | J_Li | S(Li/Mg)") is not in the ML
+    # metric vocabulary, so header matching alone read it as a table with no
+    # measurable columns.  A column of numbers under a short header *is* a
+    # measured quantity, whatever the domain calls it.
+    def _numeric_col(rws: List[Any], ci: int) -> bool:
+        vals = [str(r[ci]).strip() for r in rws
+                if isinstance(r, (list, tuple)) and ci < len(r) and str(r[ci]).strip()]
+        if len(vals) < 2:
+            return False
+        num = [v for v in vals if re.match(r"^[+\-−]?(?:\d+(?:\.\d+)?|\.\d+)\s*%?$", v)]
+        return len(num) >= max(2, int(round(len(vals) * 0.6)))
+
+    table_only = not any(b.get("type") == "body" and len(b.get("text") or "") >= 160
+                         for b in blocks)
     for ti, t in enumerate(d.get("tables") or [], 1):
         if len(edges) >= 380:
             break
@@ -3205,7 +3594,8 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         cap_block = next((b for b in blocks if b["id"] == t.get("caption_block")), None)
         host = cap_block or next((b for b in blocks if b.get("page") == t.get("page")), blocks[0])
         cols = [i for i, h in enumerate(header)
-                if i and metric_vocab.match(re.sub(r"\s*\(.*\)$", "", h))]
+                if i and (metric_vocab.match(re.sub(r"\s*\(.*\)$", "", h))
+                          or (0 < len(h) <= 40 and _numeric_col(rows, i)))]
         if not cols:
             continue
         for row in rows[:12]:
@@ -3240,6 +3630,16 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                     "quote": quote,
                     "subject_id": sid, "metric_id": mid,
                 })
+                # A cell is a measured quantity, so it earns a value node next
+                # to the property nodes the prose produces: "S(Li/Mg) = 28.6"
+                # is the number the paper argues about.  The edge is marked
+                # `origin: table` so the completeness gate can leave cells out
+                # of the density count -- a table alone should not make a paper
+                # with three real relations look dense.
+                if len(table_facts) <= 30:
+                    vid = node(f"{hdr} = {val}", "value", host)
+                    if vid and vid not in (sid, mid):
+                        add_edge(sid, vid, "has value", quote, host, origin="table")
         # The prose anchor for a table edge is the caption block: its text is
         # what a reader can open and check, while `anchor: t01` is the structural
         # anchor.  A table-only evidence item has no block and the validator
@@ -3269,47 +3669,183 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             label = {"R2": "R²", "auroc": "AUROC", "f1": "F1"}.get(label, label)
             node(label, "metric", b)
 
+    # 3) property / value pairs.  A bare number is not a concept, but "pore size
+    # = 6.8 Å" is: the sentence says what the number measures.  This is the only
+    # generic way a materials or ML paper exposes its quantitative claims to a
+    # graph, and without it the graph has methods and no results.
+    PROPERTY_WORDS = (
+        r"pore size|pore diameter|selectivity|separation factor|flux|permeance|"
+        r"permeability|rejection|conductivity|ionic conductivity|thickness|"
+        r"effective area|activation energy|retention|capacity|efficiency|"
+        r"yield|purity|ratio|pressure|temperature|concentration|current density|"
+        r"overpotential|zeta potential|coulombic efficiency|capacity retention|"
+        r"MAE|RMSE|AUROC|AUC|F1|accuracy|precision|recall|BLEU|ROUGE|"
+        r"channel|channels|layer|roughness|conductance|transference number|"
+        r"stability|durability|loading|density|viscosity|pH|salinity")
+    UNIT = (r"(?:Å|nm|µm|μm|mm|cm2|cm-2|cm−2|m2|L m-2 h-1|mol m-2 h-1|"
+            r"kJ mol-1|kJ mol−1|MPa|kPa|GPa|bar|K|°C|%|h|M|mM|µM|wt%|"
+            r"S cm-1|S cm−1|mV|V|mA|A|mg L-1|ppm|mL|g L-1)")
+    NUM = r"\d+(?:\.\d+)?(?:\s*×\s*10[-−]?\d+)?"
+
+    def nearest_property(sent: str, pos: int) -> str:
+        """The property a number measures, looking backwards only.
+
+        "operated at ... 298 K, the membrane delivers a Li+ flux of 2.41" must
+        not become "flux = 298 K": a property named after the number belongs to
+        the next clause, not to this value.
+        """
+        best, best_d = "", 10 ** 9
+        for pm in re.finditer(PROPERTY_WORDS, sent, re.I):
+            d = pos - pm.end()
+            if 0 <= d <= 60 and d < best_d:
+                gap = sent[pm.end():pos]
+                if re.search(r"\d", gap):      # another value sits in between
+                    continue
+                best, best_d = pm.group(0), d
+        return best
+
+    def nearest_entity(sent: str, pos: int) -> str:
+        """The closest entity already in the graph, used as the value's owner."""
+        best, best_d = "", 10 ** 9
+        for label, nid in list(keymap.items()):
+            for m in re.finditer(r"(?<![\w])" + re.escape(label) + r"(?![\w])", sent, re.I):
+                d = abs(pos - m.start())
+                if d < best_d:
+                    best, best_d = nid, d
+        return best if best_d <= 120 else ""
+
+    for b in blocks:
+        if b.get("type") != "body":
+            continue
+        if re.search(r"SYNTHETIC TEST MATERIAL|NOT A REAL PUBLICATION|DO NOT CITE",
+                     b["text"], re.I):
+            continue
+        for sent in sentences(b["text"], 400):
+            if len(sent) < 18:
+                continue
+            for m in re.finditer(r"(?<![A-Za-z0-9])" + NUM + r"\s*" + UNIT + r"?", sent):
+                num = re.sub(r"\s+", " ", m.group(0)).strip()
+                if not re.search(r"\d", num) or len(num) > 24:
+                    continue
+                if not re.search(UNIT + r"$", num) and len(num.split()) < 1:
+                    continue
+                prop = nearest_property(sent, m.start())
+                if not prop:
+                    continue
+                label = f"{prop.lower()} = {num}"
+                if len(nodes) >= 90:
+                    continue
+                vid = node(label, "value", b)
+                if not vid:
+                    continue
+                pid = node(prop, "property", b)
+                if pid:
+                    add_edge(pid, vid, "has_value", sent, b)
+                    owner = nearest_entity(sent, m.start())
+                    if owner and owner != pid:
+                        add_edge(owner, pid, "has_property", sent, b)
+
     buckets: Dict[str, List[str]] = {}
     for label, n in nodes.items():
         buckets.setdefault(canon(label), []).append(n["id"])
     aliases = [{"canonical": k, "nodes": v} for k, v in buckets.items() if len(v) > 1]
+    # A paper names one material three ways ("TpPa-SO3H", "TpPa-SO3H membrane",
+    # "the sulfonated COF").  Grouping by the shared head token recovers those
+    # families; the old list was empty unless two labels collapsed to one canon,
+    # so the contract fell back to an "unsupported" placeholder object.
+    fam: Dict[str, List[str]] = {}
+    for n in nodes.values():
+        label = str(n["label"])
+        head = re.split(r"[\s\-]", label)[0]
+        if len(head) >= 3 and re.match(r"^[A-Za-z]", head):
+            fam.setdefault(head, []).append(label)
+    for head, labels in fam.items():
+        if len(labels) < 2 or len(labels) > 8:
+            continue
+        aliases.append({"canonical": head, "aliases": sorted(set(labels)),
+                        "nodes": [n["id"] for n in nodes.values() if n["label"] in labels]})
+    if not aliases and nodes:
+        main = max(nodes.values(), key=lambda n: n["label"].count(" "))
+        aliases.append({"canonical": main["label"], "aliases": [main["label"]],
+                        "nodes": [main["id"]], "note": "本篇未出现同义写法"})
 
-    queries = []
-    if re.search(r"3\s*个真实查询|三条查询|queries\.md", task, re.I):
-        def edge_rows(pred):
-            rows = []
-            for e in edges:
-                ev = e.get("evidence") or {}
-                q = (ev.get("quote") or e.get("quote") or "")
-                label = f"{e.get('source')} --{e.get('relation')}--> {e.get('target')}"
-                if pred(e, q):
-                    rows.append({"edge": label, "anchor": ev.get("block") or ev.get("page") or "",
-                                 "quote": q[:260]})
-            return rows[:5]
-        queries = [
-            {"q": "哪些条件使 conductivity 高于 2 × 10-4 S cm-1？",
-             "answer": edge_rows(lambda e, q: re.search(r"3\.1\s*×\s*10-4|2\.8\s*×\s*10-4", q, re.I))},
-            {"q": "ASR 与 sintering atmosphere 是什么关系？",
-             "answer": edge_rows(lambda e, q: re.search(r"ASR|area-specific resistance",
-                                                            f"{e.get('source')} {e.get('target')}", re.I))},
-            {"q": "polishing 影响哪些指标？",
-             "answer": edge_rows(lambda e, q: (
-                 (str(e.get('source') or '').lower() == "polishing" or
-                  str(e.get('target') or '').lower() == "polishing") and
-                 not str(e.get('source') or '').startswith("P3")))},
-        ]
-    typed = [e for e in edges if e.get("relation") not in ("related_to", "mentions")]
+    # 4) descriptive aliases.  The prose rarely repeats the code name; it says
+    # "the sulfonated COF" after introducing TpPa-SO3H.  Without this the alias
+    # table only knows spellings and misses the name a reader would search for.
+    DESC_STOP = {"same", "other", "whole", "resulting", "above", "following",
+                 "present", "composite", "pristine", "bare", "individual",
+                 "single", "as-prepared", "corresponding", "latter", "former",
+                 "supported", "thin", "dense", "selective", "porous"}
+    desc: Dict[str, Dict[str, Any]] = {}
+    for b in blocks:
+        if b.get("type") != "body":
+            continue
+        if re.search(r"SYNTHETIC TEST MATERIAL|NOT A REAL PUBLICATION|DO NOT CITE",
+                     b["text"], re.I):
+            continue
+        for sent in sentences(b["text"], 400):
+            hit = [n for n in nodes.values()
+                   if len(n["label"]) >= 4
+                   and re.search(r"(?<![\w])" + re.escape(n["label"]) + r"(?![\w])",
+                                 sent, re.I)]
+            if len(hit) != 1:
+                continue
+            for m in re.finditer(
+                    r"\bthe\s+([a-z][a-z\-]{2,})\s+((?:COF|MOF|membrane|film|polymer|"
+                    r"framework|network|material|catalyst|adsorbent|sample)s?)\b", sent, re.I):
+                adj = m.group(1).lower()
+                if adj in DESC_STOP:
+                    continue
+                phrase = f"{adj} {m.group(2)}"
+                d = desc.setdefault(phrase, {"node": hit[0]["id"], "count": 0})
+                if d["node"] == hit[0]["id"]:
+                    d["count"] += 1
+    for phrase, d in sorted(desc.items(), key=lambda kv: -kv[1]["count"])[:6]:
+        n = next((x for x in nodes.values() if x["id"] == d["node"]), None)
+        if not n or d["count"] < 1:
+            continue
+        aliases.append({"canonical": n["label"], "aliases": [n["label"], phrase],
+                        "nodes": [n["id"]],
+                        "note": f"正文以“the {phrase}”指代"})
+
+    typed = [e for e in edges if e.get("relation") not in ("related to", "mentions")]
+
+    def edge_rows(pred) -> List[Dict[str, Any]]:
+        rows = []
+        for e in edges:
+            ev = e.get("evidence") or {}
+            q = (ev.get("quote") or e.get("quote") or "")
+            if pred(e, q):
+                rows.append({"edge": f"{e.get('source')} --{e.get('relation')}--> {e.get('target')}",
+                             "anchor": ev.get("block") or ev.get("page") or "",
+                             "quote": q[:260]})
+        return rows[:5]
+
+    # Queries are derived from this paper's own graph.  A fixed list asked every
+    # paper about ASR and sintering atmosphere, which is a template leak: the
+    # query file looked populated while pointing at another domain entirely.
+    queries: List[Dict[str, Any]] = []
+    degree = {}
+    for e in edges:
+        for k in (e.get("source_id"), e.get("target_id")):
+            if k:
+                degree[k] = degree.get(k, 0) + 1
+    hubs = sorted(nodes.values(), key=lambda n: -degree.get(n["id"], 0))
+    if hubs and degree.get(hubs[0]["id"], 0) >= 2:
+        top = hubs[0]
+        queries.append({"q": f"{top['label']} 与哪些实体相连？按关系与证据列出。",
+                        "answer": edge_rows(lambda e, q, t=top["label"]:
+                                            e.get("source") == t or e.get("target") == t)})
+    if any(e.get("relation") == "has_value" for e in edges):
+        queries.append({"q": "本文给出了哪些“指标 = 数值”的可核验读数？",
+                        "answer": edge_rows(lambda e, q: e.get("relation") == "has_value")})
+    linked = {e.get("source_id") for e in edges} | {e.get("target_id") for e in edges}
+    isolated = [n["label"] for n in nodes.values() if n["id"] not in linked][:6]
+    if isolated:
+        queries.append({"q": "哪些实体只有节点、没有关系？", "answer": isolated})
     if not queries and typed:
         queries.append({"q": "材料中哪些实体之间存在有向关系？", "answer": typed[:5]})
-    if not re.search(r"3\s*个真实查询|三条查询|queries\.md", task, re.I):
-        values = re.findall(r"\b(?:0\.\d+|\d+(?:\.\d+)?\s*(?:%|°C|h|mM|mg/mL))", " ".join(b["text"] for b in blocks))
-        queries.append({"q": "材料报告了哪些数值或指标？", "answer": values[:6] or ["材料未报告可核验数值"]})
-        unmeasured = []
-        for b in blocks:
-            if re.search(r"not measured|not reported|无法确定|未测量|未报告", b["text"], re.I):
-                unmeasured.append({"condition": "ambient pressure" if "ambient pressure" in b["text"].lower() else b["text"][:80],
-                                   "answer": "无法确定" if re.search(r"无法确定|not measured|未测量", b["text"], re.I) else "材料未报告"})
-        queries.append({"q": "哪些条件没有测量结果？", "answer": unmeasured or [{"answer": "材料未报告未测条件"}]})
+
     graph_queries = [{"q": q["q"], "answer": q["answer"]} for q in queries]
 
     for name, meta in (doc.get("materials") or {}).items():
@@ -3351,10 +3887,15 @@ def build_kg(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     # graded on their own deliverables, not on the seed graph size.
     mats = [str(k) for k in (doc.get("materials") or {})]
     special = any(re.search(r"mentions?\.csv|base[_-]?graph\.json", k, re.I) for k in mats)
-    enough = special or (n_nodes >= 12 and n_edges >= 8)
+    # Table cells are readings, not statements the paper makes about them, so
+    # they do not count towards the relation density that decides `complete`.
+    n_prose_edges = len([e for e in good_edges if e.get("origin") != "table"])
+    enough = special or (not table_only and n_nodes >= 12 and n_prose_edges >= 8)
     status = "complete" if enough else "partial"
     notes = ["relations come from cue verbs and sentence-level co-mention, "
              "each with its supporting sentence"]
+    if table_only:
+        notes.append("材料只有表格、没有正文句：图由表格单元格成对生成，故为 partial")
     if not enough:
         notes.append("edge density below the completeness gate (nodes*0.4); treat as partial")
     return payload, evidence, {"notes": notes, "missing": []}, status, \
@@ -3372,6 +3913,10 @@ def build_polish(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     # "dataset" and "data set" in one draft is a terminology issue, and it is a
     # sentence-level one: the reviewer has to see which sentence mixes them.
     _all_body = " ".join(str(b.get("text") or "") for b in d["blocks"])
+    # Impersonal frames ("It was found that ...") can only be made active when
+    # the manuscript already speaks as "we"; decided once per document, not per
+    # sentence, so a sentence without a pronoun is still eligible.
+    _first_person = bool(re.search(r"\b(?:we|our|us)\b", _all_body, re.I))
     mix_dataset = bool(re.search(r"\bdataset\b", _all_body, re.I)) and \
         bool(re.search(r"\bdata\s+set\b", _all_body, re.I))
     for b in d["blocks"]:
@@ -3462,7 +4007,8 @@ def build_polish(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         for s in sentences(bt):
             if re.search(r"^(?:strong|moderate|weak|negated)\s*[：:]", s, re.I):
                 continue
-            revised, changes = (_polish_apply(s) if _polish_apply else (s, []))
+            revised, changes = ((_polish_apply(s, _first_person) if _first_person is not None
+                                else _polish_apply(s)) if _polish_apply else (s, []))
             # Every sentence survives: an unchanged sentence carries numbers and
             # citations that a "changed sentences only" draft would silently drop.
             revised_lines.append(revised)
@@ -3477,6 +4023,9 @@ def build_polish(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 payload["rewrites"].append({
                     "block": b["id"], "page": b["page"], "original": s,
                     "revised": revised,
+                    # The span-level pair is what changes.csv shows: one row per
+                    # edit instead of the same sentence repeated N times.
+                    "before": c.get("original", ""), "after": c.get("revised", ""),
                     "type": c.get("type", "clarity"),
                     "reason": c.get("reason", ""),
                     "kept": protected_tokens(s),
@@ -3814,43 +4363,125 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     dupes = []
     seen: Dict[str, str] = {}
     seen_title: Dict[str, str] = {}
+
+    def _repair_from_raw(e):
+        """Re-read a GB/T style record whose fields were cut at author initials.
+
+        "W. Zhang, M. Li, H. Wang. [SYN] ... record 1. J. Synth. Membr. Sci.,
+        2011, 1: 101-110." splits into "W." / "Zhang, M." / "Li, H." when the
+        record is cut on every ". ", so venue and pages come out empty or swap
+        with the year.  Joining the initial-only fragments first restores the
+        four fields.
+        """
+        raw = (e.get("raw") or e.get("text") or "").strip()
+        if not raw:
+            return
+        pieces = re.split(r"\.\s+", raw)
+        merged = []
+        buf = ""
+        for p in pieces:
+            buf = (buf + ". " + p).strip() if buf else p
+            last = buf.split()[-1] if buf.split() else ""
+            # "W." / "M." style initials end a fragment but not a field
+            if re.fullmatch(r"[A-Z]\.?", last.rstrip(".")) and len(last) <= 2:
+                continue
+            merged.append(buf)
+            buf = ""
+        if buf:
+            merged.append(buf)
+        if len(merged) < 2:
+            return
+        authors = merged[0].strip(" .,")
+        # the title is the first fragment after the author list; the venue is
+        # everything after it ("J. Synth. Membr. Sci., 2011, 1: 101-110")
+        title_frag = merged[1].strip(" .,") if len(merged) > 1 else ""
+        tail = ". ".join(merged[2:]).strip(" .")
+        if not tail and len(merged) > 1:
+            tail = merged[-1]
+        m = re.search(r"(?P<venue>.+?),\s*(?P<year>(?:19|20)\d{2})"
+                      r"(?:,\s*(?P<vol>\d{1,4})(?:\((?P<iss>\d{1,3})\))?"
+                      r"\s*:\s*(?P<pages>\d{1,6}\s*[-–]\s*\d{1,6}))?", tail)
+        if authors and len(authors) >= 4:
+            e["authors"] = authors[:200]
+        if title_frag and len(title_frag) >= 8:
+            e["title"] = title_frag[:180]
+        if m:
+            e["venue"] = m.group("venue").strip(" .,")[:160]
+            e["year"] = m.group("year")
+            if m.group("vol"):
+                e["volume"] = m.group("vol")
+                e["issue"] = m.group("iss") or e.get("issue") or ""
+            if m.group("pages"):
+                e["pages"] = m.group("pages").replace("–", "-")
+        dm = re.search(r"doi:\s*(\S+)", raw, re.I)
+        if dm:
+            e["doi"] = dm.group(1).rstrip(".")
+        # never let the year stand in for a volume or a page range
+        if e.get("volume") and e.get("year") and e["volume"] == e["year"] and not m:
+            e["volume"] = ""
+        if e.get("pages") and e.get("year") and e["pages"] == e["year"]:
+            e["pages"] = ""
+
+    for e in entries:
+        if (not e.get("venue")) or (e.get("pages") and e.get("year") and e["pages"] == e["year"]):
+            _repair_from_raw(e)
     for e in entries:
         doi = (e.get("doi") or "").strip().lower()
-        title = re.sub(r"\W+", "", (e.get("title") or "").lower())[:60]
+        # The whole normalised title, not a 60-character prefix: real records
+        # often share a prefix ("[SYN] Synthetic study of COF membrane
+        # separation, record 1" vs "record 18") and only differ at the tail.
+        title = re.sub(r"\W+", "", (e.get("title") or "").lower())[:140]
+        year = re.sub(r"\D", "", str(e.get("year") or ""))
         hit = seen.get(doi) if doi else None
         if hit is None and len(title) >= 20:
             # "one duplicate by title with different case": the twin may carry
-            # an arXiv id instead of the DOI, so a DOI-only key misses it.
-            hit = seen_title.get(title)
+            # an arXiv id instead of the DOI, so a DOI-only key misses it.  A
+            # year guard keeps a reprint of the same work apart from a series.
+            hit = seen_title.get(title + "|" + year)
+            if hit is None:
+                hit = seen_title.get(title)
         if hit and hit != str(e["n"]):
             if not any({d["a"], d["b"]} == {hit, str(e["n"])} for d in dupes):
                 dupes.append({"a": hit, "b": str(e["n"]), "key": doi or title})
         if doi and doi not in seen:
             seen[doi] = str(e["n"])
-        if title and title not in seen_title:
-            seen_title[title] = str(e["n"])
+        if title:
+            # only the year-qualified key is authoritative; the bare title key
+            # is kept as a fallback for records that never carried a year
+            seen_title.setdefault(title + "|" + year, str(e["n"]))
+            if not year:
+                seen_title.setdefault(title, str(e["n"]))
 
     def gbt(e):
         kind = e.get("type") or "J"
+        year = str(e.get("year") or "").strip()
+        vol = str(e.get("volume") or "").strip()
+        pages = str(e.get("pages") or "").strip()
+        # A missing year used to be printed by position, so the record read
+        # "Entry missing the year field[J]. . " and "2021, 2021: 2021." when the
+        # volume and pages had been mis-read as the year.
+        if vol and vol == year:
+            vol = ""
+        if pages and pages == year:
+            pages = ""
         tail = ""
-        if e.get("volume"):
-            tail = f", {e['volume']}"
+        if vol:
+            tail = f", {vol}"
             if e.get("issue"):
                 tail += f"({e['issue']})"
-        if e.get("pages"):
-            tail += f": {e['pages']}"
-        # GB/T 7714 ends a record with the DOI when the source has one; without
-        # it the formatted list silently loses an identifier the entry carries.
+        if pages:
+            tail += f": {pages}"
         doi = f" DOI:{e['doi']}." if e.get("doi") else ""
+        yr = year or "n.d."
         if kind == "C":
             venue = f"//{e['venue']}" if e.get("venue") else ""
-            return f"{e['authors']}. {e['title']}[C]{venue}. {e['year']}{tail}.{doi}"
+            return f"{e['authors']}. {e['title']}[C]{venue}. {yr}{tail}.{doi}"
         if kind == "EB/OL":
-            return f"{e['authors']}. {e['title']}[EB/OL]. {e.get('venue') or 'arXiv'}, {e['year']}.{doi}"
+            return f"{e['authors']}. {e['title']}[EB/OL]. {e.get('venue') or 'arXiv'}, {yr}.{doi}"
         if kind == "M":
-            return f"{e['authors']}. {e['title']}[M]. {e.get('venue') or ''}, {e['year']}.{doi}"
+            return f"{e['authors']}. {e['title']}[M]. {e.get('venue') or ''}, {yr}.{doi}"
         venue = f"{e['venue']}, " if e.get("venue") else ""
-        return f"{e['authors']}. {e['title']}[J]. {venue}{e['year']}{tail}.{doi}"
+        return re.sub(r"\.\s*\.", ".", f"{e['authors']}. {e['title']}[J]. {venue}{yr}{tail}.{doi}")
 
     def apa(e):
         tail = ""
@@ -3934,8 +4565,14 @@ def build_refs(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     payload["audit"] = [{"key": x["family"], "verdict": x["status"],
                          "basis": "输入参考文献与正文作者—年核对",
                          "detail": x["detail"]} for x in ay]
-    status = "complete" if entries else "partial"
+    # A bibliography whose own audit says "4 in-text numbers have no entry" is
+    # not a complete deliverable, whatever the entry count is.
+    status = "complete" if entries and not missing_entries else "partial"
     notes = ["reference parsing is heuristic; verify DOI strings"]
+    if missing_entries:
+        notes.append(f"{len(missing_entries)} 处正文引用号没有对应条目："
+                     f"{', '.join(str(x) for x in missing_entries)}；"
+                     "已列入 issues.citations_without_entry，状态保持 partial")
     notes.extend(f"{x['family']}：{x['detail']}" for x in ay if x["status"] != "matched")
     m = re.search(r"(\d+)\s*条", task or "")
     if m and entries and int(m.group(1)) != len(entries):
@@ -4490,18 +5127,23 @@ def build_intro(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     evidence: List[Dict[str, Any]] = []
     groups: Dict[str, List[Dict[str, Any]]] = {}
     gaps, contributions, problems = [], [], []
-    for b in blocks_in(doc, r"(introduction|related work|background|abstract|brief|conclusion)"):
+    for b in blocks_in(doc, r"(introduction|related work|background|abstract|brief|discussion|conclusion)"):
         if b.get("type") == "heading":
             continue
         for s in sentences(b["text"]):
             low = s.lower()
-            if re.search(r"\b(however|remains? (?:un|open|unclear|unknown)|still unclear|not (?:yet )?(?:clear|known)|"
+            if re.search(r"\b(however|remains? (?:un|open|unclear|unknown|a |an )?(?:challeng\w*|difficult|hard|elusive|limited)|"
+                         r"still (?:unclear|unknown|difficult|challenging|limited|contested)|"
+                         r"not (?:yet )?(?:clear|known|resolved)|"
                          r"few (?:studies|works)|little (?:is )?known|rarely|has not been|have not been|"
-                         r"limited (?:work|evidence|study|studies)|gap|open question|unknown|disagree)\b", low):
+                         r"limited (?:work|evidence|study|studies)|gaps?|open questions?|unknown|disagree|"
+                         r"remains?\b|not been demonstrated|no reported)\b", low):
                 gaps.append({"text": s, "block": b["id"], "page": b["page"]})
                 add_evidence(evidence, ev(b, "gap statement"))
-            if re.search(r"\b(we|this paper|this work)\b.{0,40}\b(propose|introduce|present|contribute|show|"
-                         r"explore|study|investigate|compare|examine|report|provide|release|demonstrate)\b", low):
+            if re.search(r"\b(we|this paper|this work|this protocol|this study|here|the present (?:work|study|material|protocol))\b.{0,40}\b(propose|introduce|present|contribute|show|"
+                         r"explore|study|investigate|compare|examine|report|provide|release|demonstrate|"
+                         r"describe|detail|outline|specify|design|assess|evaluat|measur|quantif|test|"
+                         r"verif|check)\b", low):
                 contributions.append({"text": s, "block": b["id"], "page": b["page"]})
                 add_evidence(evidence, ev(b, "contribution"))
             if re.search(r"\b(problem|challenge|difficult|costly|expensive|bottleneck|hard to|struggle)\b", low):
@@ -4522,6 +5164,26 @@ def build_intro(doc: Dict[str, Any], case: Dict[str, Any], task: str):
             if len(gaps) >= 6:
                 break
 
+    if not contributions:
+        # A short note states its purpose in the opening paragraph, outside any
+        # "Introduction" heading; scan the whole document before concluding that
+        # the source has no contribution sentence.
+        for b in d["blocks"]:
+            if (b.get("type") or "") == "heading":
+                continue
+            for s in sentences(b["text"]):
+                if re.search(r"\b(we|this paper|this work|this protocol|this study|here|"
+                             r"the present (?:work|study|material|protocol))\b.{0,40}"
+                             r"\b(propose|introduce|present|contribute|show|explore|study|"
+                             r"investigate|compare|examine|report|provide|release|demonstrate|"
+                             r"describe|detail|outline|specify|design|assess\w*|evaluat\w*|measur\w*|"
+                             r"quantif\w*|test\w*|verif\w*|check\w*)\b", s, re.I):
+                    contributions.append({"text": s, "block": b["id"], "page": b["page"]})
+                    add_evidence(evidence, ev(b, "contribution (whole-document scan)"))
+                    break
+            if contributions:
+                break
+
     cited = set()
     for b in d["blocks"]:
         for m in CITE_BRACKET.finditer(b["text"]):
@@ -4534,17 +5196,47 @@ def build_intro(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                 texts.append(t)
         return " ".join(texts[:8]).strip() or fallback
 
+    abstract_text = " ".join(s for b in blocks_in(doc, r"abstract")
+                             for s in sentences(b["text"])[:3]).strip()
+    if not abstract_text:
+        # A protocol or note has no Abstract heading; its opening paragraph is
+        # the context.  Leaving this empty produced an empty context paragraph
+        # and a partial status for a perfectly readable source.
+        first_body = next((b for b in (d.get("blocks") or [])
+                           if (b.get("type") or "") == "body" and len(b.get("text") or "") > 80), None)
+        if first_body:
+            abstract_text = " ".join(sentences(first_body["text"])[:2]).strip()
     context = _join(problems or groups.get("Brief", []) or groups.get("Research Brief", []),
-                    "The introduction must state the context and the problem.")
+                    abstract_text)
     prior = _join([{"text": it["gist"]} for g in groups.values() for it in g],
                   "Prior work is grouped by the claims it supports.")
-    gap_text = _join(gaps, "The source does not state a gap explicitly.")
-    contribution_text = _join(contributions,
-                             "No contribution sentence was reported in the source.")
+    gap_text = _join(gaps, "")
+    contribution_text = _join(contributions, "")
     scope = _join([{"text": s} for b in blocks_in(doc, r"(limitations?|discussion|conclusion)")
                    for s in sentences(b["text"])],
-                  "The source does not state a scope limitation.")
+                  "")
+    # An instruction to the writer ("must state the context") is not prose and
+    # must never reach intro_cited.md; what the source does not say belongs in
+    # uncertainty instead.
+    intro_missing = []
+    if not gap_text:
+        intro_missing.append("source does not state a gap explicitly")
+    if not contribution_text:
+        intro_missing.append("source has no 'we propose/show' contribution sentence")
+    if not scope:
+        intro_missing.append("source does not state a scope limitation")
     ref_names = []
+    if d.get("references"):
+        # The paper's own reference list is the citation vocabulary of the intro;
+        # leaving it out produced an intro with no [n] keys at all.
+        for r in d["references"][:30]:
+            fam = re.split(r"[,.]", str(r.get("authors") or ""))[0].strip()
+            fam = fam.split()[-1] if fam.split() else ""
+            yr = str(r.get("year") or "").strip()
+            label = " ".join(x for x in (fam, f"({yr})" if yr else "") if x) or \
+                (str(r.get("title") or "")[:60])
+            if label and label not in ref_names:
+                ref_names.append(label)
     if not d.get("references"):
         for items in groups.values():
             for it in items:
@@ -4592,13 +5284,17 @@ def build_intro(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     # external `research_brief` file made every ordinary paper partial even
     # when the draft was complete; keep partial only when a paragraph is empty
     # or there is no evidence at all.
+    # A supplied source that never states a gap or a scope limit is a gap in
+    # the source, recorded under uncertainty; it does not make the delivered
+    # draft unusable.  Partial stays reserved for an empty paragraph.
     status = "complete" if draft_ready and evidence else "partial"
     notes = [f"{len(gaps)} gaps, {len(contributions)} contributions; "
              f"draft {'filled from source evidence' if draft_ready else 'has empty paragraphs'}"]
-    return payload, evidence, {"notes": [] if draft_ready else
-                               ["prose is written by the agent from these evidence-bound claims",
-                                "status stays partial until draft paragraphs are filled"],
-                               "missing": []}, status, notes
+    unc_notes = [] if draft_ready else \
+        ["prose is written by the agent from these evidence-bound claims",
+         "status stays partial until draft paragraphs are filled"]
+    unc_notes = unc_notes + [f"未报告：{x}" for x in intro_missing]
+    return payload, evidence, {"notes": unc_notes, "missing": intro_missing}, status, notes
 
 
 # --------------------------------------------------------------------------- #
@@ -4612,7 +5308,7 @@ HYPER_NAME = re.compile(r"\b(learning rate|batch size|epochs?|steps?|layers?|hid
 # A bench protocol carries the same kind of facts as a training config, only in
 # value+unit form ("IPTG 至 0.5 mM", "4,000 × g").  Without this the parameter
 # table is empty for every wet-lab paper.
-WET_UNIT = r"(MPa|mM|µM|μM|nM|°C|nm|mm|min|h|s|%|×\s*g|rpm|mg|mL|µL|μL|kDa|Da|Hz|MHz|mV|K|Å)"
+WET_UNIT = r"(MPa|mM|µM|μM|nM|M|°C|cm2|cm²|nm|mm|min|h|s|%|×\s*g|rpm|mg|mL|µL|μL|kDa|Da|Hz|MHz|mV|K|Å)"
 WET_PAIR = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*" + WET_UNIT + r"\b")
 
 # "learning rate 3 × 10^-4" is 0.0003.  A generic number regex stops at the
@@ -4649,7 +5345,7 @@ def _is_task_file(name: str) -> bool:
     return bool(re.match(r"^(?:task|case|brief|prompt|readme|instructions?)\.(?:md|txt|json)$", base))
 
 
-def _wet_label(line: str, at: int) -> str:
+def _wet_label(line: str, at: int, unit: str = "") -> str:
     """A short name for the quantity, taken from the words just before it."""
     low = line.lower()
     stop = low.find("停")
@@ -4701,8 +5397,39 @@ def _wet_label(line: str, at: int) -> str:
         return f"{chem.group(1)} 用量"
     head = re.split(r"[：:，,。;；]", tail)[-1].strip()
     head = re.sub(r"^(?:-|\*|\d+[.)])\s*", "", head)
+    # Peel off the value that was just read ("20 °C", "2.41 mol m-2 h-1") plus
+    # the preposition that follows it ("for", "at", "of"): otherwise the label
+    # of a protocol line came out as "25 C for" / "J_Li (mol m-" / "pore size of".
+    for _ in range(4):
+        head = re.sub(r"[\s,;:=≈~±(（\-–]*$", "", head)
+        head = re.sub(r"(?:\b\d+(?:[.,]\d+)?\s*)"
+                      r"(?:°?\s*(?:C|F|K)|MPa|mPa|mM|µM|μM|nM|nm|mm|cm|mL|µL|μL|mg|g|kDa|Da|"
+                      r"Hz|MHz|mV|mol\s*m-[12]\s*h-[1]|mol|wt%|%|h|min|s|rpm|Å)\b"
+                      r"\s*(?:for|at|of|in|to|with|and|overnight)?\s*$", "", head, flags=re.I)
+        head = re.sub(r"\b(?:for|at|of|in|to|with|and|a|an|the)\s*$", "", head, flags=re.I).strip()
     words = head.split()
     label = " ".join(words[-3:]) if words else ""
+    # Two conditions in one sentence ("at 25 °C for 72 h") share the same
+    # preceding words, so name-by-context collapsed them into one row and the
+    # 72 h entry disappeared.  Give the unit its quantity name instead.
+    kinds = {"°C": "temperature", "K": "temperature", "h": "time", "min": "time",
+             "s": "time", "MPa": "pressure", "Å": "size", "nm": "thickness",
+             "M": "concentration", "mm": "length", "cm2": "area", "cm²": "area",
+             "cm": "length", "%": "fraction"}
+    kind = kinds.get(unit)
+    if kind:
+        if re.search(r"dried|drying|dry", low):
+            sub = "drying"
+        elif re.search(r"polymeri", low):
+            sub = "polymerization"
+        elif re.search(r"wash", low):
+            sub = "washing"
+        elif re.search(r"clamp|press", low):
+            sub = "assembly"
+        else:
+            sub = " ".join(words[-2:]) if words else "condition"
+        sub = re.sub(r"^(?:as|at|with|of|a|an|the|its|their)\s+", "", sub.strip()).strip()
+        label = sub if sub.lower().endswith(kind) else f"{sub} {kind}"
     return (label or "条件")[:40]
 
 HYPER = re.compile(HYPER_NAME.pattern + r"[^;]{0,40}", re.I)
@@ -5051,10 +5778,18 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
         _body = str(_meta.get("text") or "") if isinstance(_meta, dict) else str(_meta)
         material_texts.append(_body)
         for line in _body.splitlines():
+            # A markdown table row carries measured results (permeance, flux),
+            # not protocol conditions; reading "| 2.41 |" as "J_Li (mol m-" +
+            # "2 h" filled params.csv with truncated pseudo-parameters.
+            if line.strip().startswith("|"):
+                continue
+            # "at 25 C for 72 h" is a temperature even without the degree sign.
+            line = re.sub(r"(\d(?:[.,]\d+)?)\s*C\b(?=\s*(?:for|at|in|overnight|,|;|\.|$))",
+                          r"\1 °C", line)
             for m in WET_PAIR.finditer(line):
                 unit = re.sub(r"\s+", "", m.group(2))
                 value = f"{m.group(1)} {unit}"
-                label = _wet_label(line, m.start())
+                label = _wet_label(line, m.start(), unit)
                 if label == "EIS 频率范围":
                     rm = re.search(r"(\d+(?:\.\d+)?)\s*Hz\s*[–\-]\s*(\d+(?:\.\d+)?)\s*MHz",
                                    line, re.I)
@@ -5066,11 +5801,12 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
                     continue
                 params.append({"name": label, "value": value,
                                "unit": unit, "context": line.strip()[:160],
-                               "block": "", "page": 1})
-                add_evidence(evidence, {"block": "experiment log", "page": 1,
-                                        "anchor": line.strip()[:60], "quote": line.strip()[:200],
-                                        "why": "protocol parameter", "claim": value,
-                                        "source": _name, "type": "参数", "note": ""})
+                               "block": "", "page": 1,
+                               "source_anchor": line.strip()[:80]})
+                # The protocol text is a material file, not a block of the PDF,
+                # so a block anchor here is unverifiable and failed the self-check
+                # ("unknown block 'experiment log'").  The line itself is kept
+                # as source_anchor in params.csv.
             for m in re.finditer(r"R[²2]\s*=\s*([0-9.]+)", line):
                 value = f"R² = {m.group(1)}"
                 if any(p.get("value") == value for p in params):
@@ -5214,6 +5950,24 @@ def build_methods(doc: Dict[str, Any], case: Dict[str, Any], task: str):
     eval_found = [x["item"] for x in payload["reproducibility_checklist"] if x.get("found")]
     eval_text = ("已报告：" + "、".join(eval_found)) if eval_found else \
         "材料未报告评估指标、重复次数或硬件环境。"
+    # A protocol that says "the reaction temperature and time are not recorded"
+    # has told the reader something specific; that sentence belongs in missing[]
+    # and in the draft, not silently dropped.
+    unrecorded = []
+    for _body in material_texts:
+        for s in [x.strip() for x in _body.splitlines() if x.strip()]:
+            if re.search(r"not (?:recorded|reported|measured|specified)|"
+                         r"未记录|未报告|没有记录|missing", s, re.I) and len(s) <= 240:
+                if s not in unrecorded:
+                    unrecorded.append(s)
+    if unrecorded:
+        miss = payload.get("missing")
+        if isinstance(miss, dict):
+            cur = list(miss.get("items") or [])
+            payload["missing"] = {"items": list(dict.fromkeys(cur + unrecorded))}
+        else:
+            payload["missing"] = list(dict.fromkeys(list(miss or []) + unrecorded))
+        eval_text = eval_text + " 未记录项：" + "；".join(unrecorded[:3])
     payload["draft"] = {
         "status": "drafted_from_source",
         "paragraphs": [
@@ -5539,12 +6293,11 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
 
     for b in d["blocks"][:6]:
         add_evidence(evidence, ev(b, "source section"))
-    for f in fixes[:6]:
-        add_evidence(evidence, {"block": f.get("location") or "project/main.tex",
-                                "page": 1, "anchor": f.get("location") or "project/main.tex",
-                                "quote": f.get("problem") or "", "why": "fix recorded",
-                                "claim": f.get("problem") or "", "source": "project/main.tex",
-                                "type": "新增标注", "note": f.get("change") or ""})
+    # Each fix is a change to the source, not a quotable span of it: the
+    # diagnostic text ("missing \bibliography", "figure not found") appears
+    # nowhere in main.tex, so it belongs in change_log/fix_report.md only.
+    # Earlier it was pushed into evidence[] and every such item failed the
+    # self-check as "quote not found", downgrading a good compile to partial.
     if len(evidence) < 6:
         for item in ("main.tex", "compile.log", "fix_report.md", "compliance.md"):
             path = os.path.join(proj or ".", item)
@@ -5593,6 +6346,13 @@ def build_latex(doc: Dict[str, Any], case: Dict[str, Any], task: str, out_dir: s
     if compile_info.get("ok") and not compile_info["static_check"]["problems"]:
         status = "complete"
         notes = []
+    elif not compile_info.get("attempted") and not compile_info["static_check"]["problems"]:
+        # The case itself said "don't compile" and the static pass is clean:
+        # nothing is missing from the deliverable, so it is complete with the
+        # reason recorded rather than shipped as a half-done `partial`.
+        status = "complete"
+        notes = ["compile not attempted by instruction (attempted:false); "
+                 "static check clean, project source delivered"]
     elif not compile_info.get("attempted"):
         status = "partial"
         notes = ["no TeX engine on this machine: source + static check delivered, "

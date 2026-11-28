@@ -498,11 +498,14 @@ def page_order(pages: List[Dict[str, Any]]) -> Dict[str, Any]:
         hit = None
         for l in p.get("lines", []):
             text = (l.get("text") or "").strip()
-            if not re.fullmatch(r"[-–—]?\s*\d{1,4}\s*[-–—]?", text):
+            # Bare numbers and printed labels ("Page 7", "第 7 页") both count;
+            # a run that jumps from 5 to 7 means page 6 is missing.
+            m = re.fullmatch(r"(?:page|p\.|第)?\s*[-–—]?\s*(\d{1,4})\s*[-–—]?\s*(?:页)?", text, re.I)
+            if not m:
                 continue
             y0, y1 = float(l["bbox"][1]), float(l["bbox"][3])
             if h and (y1 < h * 0.1 or y0 > h * 0.9):
-                hit = int(re.sub(r"\D", "", text))
+                hit = int(m.group(1))
                 break
         numbers.append(hit)
     found = [n for n in numbers if n is not None]
